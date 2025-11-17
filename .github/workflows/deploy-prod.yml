@@ -1,0 +1,28 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: FTP Deploy to Production
+      uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+      with:
+        server: ${{ secrets.FTP_PROD_SERVER }}
+        username: ${{ secrets.FTP_PROD_USERNAME }}
+        password: ${{ secrets.FTP_PROD_PASSWORD }}
+        local-dir: "./"
+        server-dir: "/"
+        exclude: |
+          img/upload/**
+          img/gallery/**
+          admin/backups/**
+          admin/images/**
+          admin/variants/**
+          misc/**
+

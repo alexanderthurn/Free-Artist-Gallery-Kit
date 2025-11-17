@@ -60,6 +60,9 @@
     .file-item { border: 1px solid #ddd; border-radius: 8px; padding: 12px; background: #fff; display: flex; flex-direction: column; gap: 8px; }
     .file-item img { width: 100%; height: 150px; object-fit: cover; border-radius: 4px; background: #fafafa; }
     .file-item-pdf { width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 4px; font-size: 48px; color: #dc3545; }
+    .file-item-other { width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 4px; font-size: 48px; color: #666; }
+    .file-item-json { width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 4px; font-size: 48px; color: #f59e0b; }
+    .file-item-ico { width: 100%; height: 150px; display: flex; align-items: center; justify-content: center; background: #f0f0f0; border-radius: 4px; font-size: 48px; color: #3b82f6; }
     .file-name { font-size: 12px; color: #666; word-break: break-all; }
     .file-url { font-size: 11px; color: #555; word-break: break-all; cursor: pointer; padding: 4px; border-radius: 4px; background: #f5f5f5; }
     .file-url:hover { background: #e8e8e8; }
@@ -890,12 +893,23 @@
           const escapedImgSnippet = imgSnippet.replace(/'/g, "\\'").replace(/"/g, "&quot;");
           const escapedLinkSnippet = linkSnippet.replace(/'/g, "\\'").replace(/"/g, "&quot;");
           
+          // Determine preview icon based on file type
+          let previewIcon = '';
+          if (isImage) {
+            previewIcon = `<img src="${escapedUrl}" alt="${escapedFilename}" loading="lazy">`;
+          } else if (file.type === 'pdf') {
+            previewIcon = `<div class="file-item-pdf">📄</div>`;
+          } else if (file.type === 'json') {
+            previewIcon = `<div class="file-item-json">📋</div>`;
+          } else if (file.type === 'ico') {
+            previewIcon = `<div class="file-item-ico">🖼️</div>`;
+          } else {
+            previewIcon = `<div class="file-item-other">📎</div>`;
+          }
+          
           return `
             <div class="file-item">
-              ${isImage ? 
-                `<img src="${escapedUrl}" alt="${escapedFilename}" loading="lazy">` :
-                `<div class="file-item-pdf">📄</div>`
-              }
+              ${previewIcon}
               <div class="file-name" title="${escapedFilename}">${escapedFilename}</div>
               <div class="file-url" onclick="copyUrl('${escapedUrl}', this)" title="Klicken zum Kopieren">${file.url}</div>
               <div class="file-actions">

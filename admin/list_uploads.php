@@ -26,14 +26,26 @@ foreach ($dirFiles as $file) {
     $isImage = in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true);
     $isPdf = $extension === 'pdf';
     
-    if (!$isImage && !$isPdf) continue;
+    // Determine file type for display
+    $fileType = 'other';
+    if ($isImage) {
+        $fileType = 'image';
+    } elseif ($isPdf) {
+        $fileType = 'pdf';
+    } elseif ($extension === 'json') {
+        $fileType = 'json';
+    } elseif ($extension === 'ico') {
+        $fileType = 'ico';
+    } else {
+        $fileType = 'other';
+    }
     
     $files[] = [
         'filename' => $file,
         'url' => '/img/upload/' . $file,
         'size' => $stat['size'],
         'timestamp' => $stat['mtime'],
-        'type' => $isImage ? 'image' : 'pdf'
+        'type' => $fileType
     ];
 }
 

@@ -29,20 +29,7 @@ if ($file['error'] !== UPLOAD_ERR_OK) {
     exit;
 }
 
-// Validate file type (images and PDFs)
-$allowedTypes = [
-    'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
-    'application/pdf'
-];
-$finfo = finfo_open(FILEINFO_MIME_TYPE);
-$mimeType = finfo_file($finfo, $file['tmp_name']);
-finfo_close($finfo);
-
-if (!in_array($mimeType, $allowedTypes, true)) {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'Invalid file type. Only images and PDFs are allowed.']);
-    exit;
-}
+// File type validation removed - all file types are now accepted
 
 // Validate file size (max 10MB)
 if ($file['size'] > 10 * 1024 * 1024) {
@@ -61,10 +48,21 @@ if (!is_dir($uploadDir)) {
     }
 }
 
-// Generate unique filename
-$extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-$filename = 'upload_' . time() . '_' . uniqid() . '.' . $extension;
+// Use original filename, but handle conflicts
+$originalFilename = basename($file['name']);
+$filename = $originalFilename;
 $targetPath = $uploadDir . '/' . $filename;
+
+// If file already exists, append a number to make it unique
+$counter = 1;
+while (file_exists($targetPath)) {
+    $pathInfo = pathinfo($originalFilename);
+    $extension = isset($pathInfo['extension']) ? '.' . $pathInfo['extension'] : '';
+    $baseName = $pathInfo['filename'];
+    $filename = $baseName . '_' . $counter . $extension;
+    $targetPath = $uploadDir . '/' . $filename;
+    $counter++;
+}
 
 // Move uploaded file
 if (!move_uploaded_file($file['tmp_name'], $targetPath)) {

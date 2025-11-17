@@ -94,10 +94,12 @@
         const date = new Date(variant.mtime * 1000).toLocaleString('de-DE');
         const nameWithoutExt = variant.name.replace(/\.[^/.]+$/, '');
         // Add cache-busting parameter using mtime timestamp
-        const cacheBuster = variant.mtime ? `?t=${variant.mtime}` : `?t=${Date.now()}`;
-        const imageUrl = escapeHtml(variant.url) + cacheBuster;
+        const baseUrl = variant.url;
+        const separator = baseUrl.includes('?') ? '&' : '?';
+        const cacheBuster = variant.mtime ? `${separator}t=${variant.mtime}` : `${separator}t=${Date.now()}`;
+        const imageUrl = baseUrl + cacheBuster;
         item.innerHTML = `
-          <img class="variant-image" src="${imageUrl}" alt="${escapeHtml(variant.name)}" loading="lazy">
+          <img class="variant-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(variant.name)}" loading="lazy">
           <div class="variant-name-display" onclick="startRename('${escapeHtml(variant.name)}')" title="Klicken zum Umbenennen">${escapeHtml(variant.name)}</div>
           <div class="muted" style="font-size: 11px; margin-bottom: 8px;">${date}</div>
           <div class="variant-actions">
@@ -153,8 +155,10 @@
       setTimeout(() => {
         document.querySelectorAll('.variant-image').forEach(img => {
           const currentSrc = img.src;
-          const separator = currentSrc.includes('?') ? '&' : '?';
-          img.src = currentSrc.split('?')[0] + separator + 't=' + Date.now();
+          // Remove existing cache buster parameter if present
+          const urlWithoutCache = currentSrc.split('&t=')[0].split('?t=')[0];
+          const separator = urlWithoutCache.includes('?') ? '&' : '?';
+          img.src = urlWithoutCache + separator + 't=' + Date.now();
         });
       }, 50);
     }
@@ -261,6 +265,7 @@
 
       const name = document.getElementById('uploadName').value.trim();
       let replace = false;
+      const file = files[0];
 
       // Check if name exists
       if (name) {
@@ -283,28 +288,37 @@
 
       showLoading('Bild wird hochgeladen...');
 
-      try {
+      // Helper function to create FormData with file
+      const createUploadBody = (shouldReplace) => {
         const body = new FormData();
-        body.set('action', 'upload');
-        body.set('image', files[0]);
+        body.append('action', 'upload');
+        body.append('image', file);
         if (name) {
-          body.set('name', name);
+          body.append('name', name);
         }
-        if (replace) {
-          body.set('replace', 'true');
+        if (shouldReplace) {
+          body.append('replace', 'true');
         }
+        return body;
+      };
 
+      try {
+        const body = createUploadBody(replace);
         const res = await fetch('variants.php', { method: 'POST', body });
+        
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           if (data.error === 'file_exists') {
             if (confirm(data.message + ' Möchten Sie sie ersetzen?')) {
-              body.set('replace', 'true');
-              const retryRes = await fetch('variants.php', { method: 'POST', body });
+              const retryBody = createUploadBody(true);
+              const retryRes = await fetch('variants.php', { method: 'POST', body: retryBody });
               const retryData = await retryRes.json();
               if (retryData.ok) {
                 showToast('Bild erfolgreich hochgeladen und ersetzt', 'success');
                 refresh();
+                return;
+              } else {
+                showToast('Upload fehlgeschlagen: ' + (retryData.error || 'Unknown'), 'error');
                 return;
               }
             }
@@ -319,12 +333,15 @@
         if (!data.ok) {
           if (data.error === 'file_exists') {
             if (confirm(data.message + ' Möchten Sie sie ersetzen?')) {
-              body.set('replace', 'true');
-              const retryRes = await fetch('variants.php', { method: 'POST', body });
+              const retryBody = createUploadBody(true);
+              const retryRes = await fetch('variants.php', { method: 'POST', body: retryBody });
               const retryData = await retryRes.json();
               if (retryData.ok) {
                 showToast('Bild erfolgreich hochgeladen und ersetzt', 'success');
                 refresh();
+                return;
+              } else {
+                showToast('Upload fehlgeschlagen: ' + (retryData.error || 'Unknown'), 'error');
                 return;
               }
             }
@@ -554,7 +571,7 @@
 
   <div class="card">
     <h2>Bild hochladen</h2>
-    <form id="uploadForm" action="variants.php" method="post" enctype="multipart/form-data">
+    <form id="uploadForm" action="variants.php" method="post" enctype="multipart/form-data" onsubmit="event.preventDefault(); return false;">
       <div class="field">
         <label>Name (optional)</label>
         <input type="text" id="uploadName" name="name" placeholder="z.B. schlafzimmer_variant">
@@ -562,7 +579,7 @@
       <div id="uploadArea" class="upload-area">
         <div class="upload-area-text">📷 Bild hier ablegen oder klicken zum Auswählen</div>
         <div class="upload-area-hint">PNG, JPG, WEBP werden unterstützt und automatisch zu JPG konvertiert</div>
-        <input type="file" name="image" accept="image/*" required style="display: none;" id="fileInput">
+        <input type="file" name="image" accept="image/*" style="display: none;" id="fileInput">
       </div>
     </form>
   </div>

@@ -105,7 +105,7 @@ function handleList() {
       if (!in_array($ext, ['jpg','jpeg'])) continue;
       $files[] = [
         'name' => $item,
-        'url' => 'variants/' . rawurlencode($item),
+        'url' => '/admin/variants/' . rawurlencode($item),
         'mtime' => filemtime($path),
         'size' => filesize($path)
       ];
@@ -206,7 +206,7 @@ function handleGenerate() {
   echo json_encode([
     'ok' => true,
     'filename' => $filename,
-    'url' => 'variants/' . rawurlencode($filename),
+    'url' => '/admin/variants/' . rawurlencode($filename),
     'prompt' => $prompt,
     'replaced' => is_file($filepath) && $replace
   ]);
@@ -283,7 +283,7 @@ function handleGenerateFromPainting() {
   echo json_encode([
     'ok' => true,
     'filename' => $filename,
-    'url' => 'variants/' . rawurlencode($filename),
+    'url' => '/admin/variants/' . rawurlencode($filename),
     'prompt' => $prompt,
     'source_image' => $imagePath
   ]);
@@ -309,26 +309,35 @@ function handleUpload() {
   $name = trim($_POST['name'] ?? '');
   $replace = ($_POST['replace'] ?? '') === 'true';
   
-  // Generate filename (always JPG)
+  // Use original filename, but change extension to .jpg
+  $originalFilename = basename($file['name']);
+  $pathInfo = pathinfo($originalFilename);
+  $baseName = $pathInfo['filename'];
+  
+  // If a custom name is provided, use it; otherwise use original filename
   if ($name !== '') {
-    $filename = sanitizeFilename($name);
+    // Remove extension from custom name if present
+    $customBaseName = pathinfo($name, PATHINFO_FILENAME);
+    $filename = $customBaseName . '.jpg';
   } else {
-    $timestamp = date('Y-m-d_His');
-    $filename = 'variant_' . $timestamp . '.jpg';
+    // Use original filename but change extension to .jpg
+    $filename = $baseName . '.jpg';
   }
   
   $filepath = $variantsDir . '/' . $filename;
   
-  // Check if file exists
+  // Handle conflicts by appending a number if file exists
   if (is_file($filepath) && !$replace) {
-    http_response_code(409); // Conflict
-    echo json_encode([
-      'ok' => false,
-      'error' => 'file_exists',
-      'filename' => $filename,
-      'message' => 'Eine Variante mit diesem Namen existiert bereits.'
-    ]);
-    exit;
+    $counter = 1;
+    $pathInfo = pathinfo($filename);
+    $baseName = $pathInfo['filename'];
+    while (is_file($filepath)) {
+      $filename = $baseName . '_' . $counter . '.jpg';
+      $filepath = $variantsDir . '/' . $filename;
+      $counter++;
+    }
+  } else if (is_file($filepath) && $replace) {
+    // File exists and replace is true, will overwrite
   }
   
   // Convert uploaded image to JPG (handles PNG, WEBP, JPG)
@@ -341,7 +350,7 @@ function handleUpload() {
   echo json_encode([
     'ok' => true,
     'filename' => $filename,
-    'url' => 'variants/' . rawurlencode($filename),
+    'url' => '/admin/variants/' . rawurlencode($filename),
     'replaced' => $replace
   ]);
 }
@@ -398,7 +407,7 @@ function handleRename() {
     'ok' => true,
     'old_filename' => $oldFilename,
     'new_filename' => $newFilename,
-    'url' => 'variants/' . rawurlencode($newFilename)
+    'url' => '/admin/variants/' . rawurlencode($newFilename)
   ]);
 }
 

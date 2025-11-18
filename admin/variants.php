@@ -32,9 +32,6 @@ switch ($action) {
   case 'generate':
     handleGenerate();
     break;
-  case 'generate_from_painting':
-    handleGenerateFromPainting();
-    break;
   case 'upload':
     handleUpload();
     break;
@@ -157,28 +154,30 @@ function handleGenerate() {
   // Using the same model version as corners.php, but for text-to-image generation
   $VERSION = '2784c5d54c07d79b0a2a5385477038719ad37cb0745e61bbddf2fc236d196a6b';
   
+  $promptFinal = <<<PROMPT
+  Erzeuge ein neues, fotorealistisches Bild eines Raumes. 
+  Der Raum soll neutral gestaltet sein, die Deckenhöhe soll 2,5m sein. Der Raum soll genügend freie glatte Wandfläche bieten. Es darf kein Bild irgendwo hängen.
+  Achte auf natürliche Beleuchtung und klare Linien.
+  
+  Raumbeschreibung des Nutzers:
+  $prompt
+  PROMPT;
+
+
   // Try with nano banana model (same version as corners.php)
-  // If it doesn't support text-only, fall back to flux-schnell
   try {
     $payload = [
       'version' => $VERSION,
       'input' => [
-        'prompt' => $prompt,
-        'output_format' => 'png'
+        'prompt' => $promptFinal,
+        'output_format' => 'jpg'
       ]
     ];
     $result = replicate_call_version($TOKEN, $VERSION, $payload);
   } catch (Exception $e) {
-    // Fallback to flux-schnell for text-to-image
-    $MODEL = 'black-forest-labs/flux-schnell';
-    $payload = [
-      'input' => [
-        'prompt' => $prompt,
-        'aspect_ratio' => '1:1',
-        'output_format' => 'png'
-      ]
-    ];
-    $result = replicate_call_model($TOKEN, $MODEL, $payload);
+    http_response_code(502);
+    echo json_encode(['ok' => false, 'error' => 'replicate_failed', 'detail' => $e->getMessage()]);
+    exit;
   }
   
   // Extract image from result
@@ -189,19 +188,8 @@ function handleGenerate() {
     exit;
   }
   
-  // Save as temporary PNG first, then convert to JPG
-  $tempPng = $variantsDir . '/temp_' . uniqid() . '.png';
-  file_put_contents($tempPng, $imgBytes);
   
-  // Convert PNG to JPG using Imagick or GD
-  if (!convert_to_jpg($tempPng, $filepath)) {
-    @unlink($tempPng);
-    http_response_code(502);
-    echo json_encode(['ok' => false, 'error'=>'failed_to_convert_image']);
-    exit;
-  }
-  
-  @unlink($tempPng);
+  file_put_contents($filepath, $imgBytes);
   
   echo json_encode([
     'ok' => true,
@@ -212,82 +200,6 @@ function handleGenerate() {
   ]);
 }
 
-function handleGenerateFromPainting() {
-  global $TOKEN, $variantsDir;
-  
-  $imagePath = trim($_POST['image_path'] ?? '');
-  $prompt = trim($_POST['prompt'] ?? '');
-  
-  if ($imagePath === '') {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'error'=>'image_path required']);
-    exit;
-  }
-  
-  if ($prompt === '') {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'error'=>'prompt required']);
-    exit;
-  }
-  
-  // Resolve absolute path
-  $abs = $imagePath;
-  if ($imagePath[0] !== '/' && !preg_match('#^[a-z]+://#i', $imagePath)) {
-    $abs = dirname(__DIR__) . '/' . ltrim($imagePath, '/');
-  }
-  
-  if (!is_file($abs)) {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'error'=>'image not found', 'path'=>$abs]);
-    exit;
-  }
-  
-  $mime = mime_content_type($abs);
-  if (!in_array($mime, ['image/jpeg','image/png','image/webp'])) {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'error'=>'unsupported image type', 'mime'=>$mime]);
-    exit;
-  }
-  
-  $imgB64 = base64_encode(file_get_contents($abs));
-  
-  // Use nano banana model with image input (like corners.php)
-  $VERSION = '2784c5d54c07d79b0a2a5385477038719ad37cb0745e61bbddf2fc236d196a6b';
-  
-  $payload = [
-    'version' => $VERSION,
-    'input' => [
-      'prompt' => $prompt,
-      'image_input' => ["data:$mime;base64,$imgB64"],
-      'output_format' => 'png'
-    ]
-  ];
-  
-  $result = replicate_call_version($TOKEN, $VERSION, $payload);
-  
-  // Extract image from result
-  $imgBytes = fetch_image_bytes($result['output'] ?? null);
-  if ($imgBytes === null) {
-    http_response_code(502);
-    echo json_encode(['ok' => false, 'error'=>'failed_to_extract_image', 'response' => $result]);
-    exit;
-  }
-  
-  // Generate filename
-  $timestamp = date('Y-m-d_His');
-  $filename = 'variant_' . $timestamp . '.png';
-  $filepath = $variantsDir . '/' . $filename;
-  
-  file_put_contents($filepath, $imgBytes);
-  
-  echo json_encode([
-    'ok' => true,
-    'filename' => $filename,
-    'url' => '/admin/variants/' . rawurlencode($filename),
-    'prompt' => $prompt,
-    'source_image' => $imagePath
-  ]);
-}
 
 function handleUpload() {
   global $variantsDir;
@@ -524,17 +436,8 @@ function handleCopyToImage() {
 You are an image editor.
 
 Task:
-- You have two images: a room/interior scene (variant) and a painting portrait (final).
-- The room image has a free space on the wall where a painting should hang.
-- Place the painting portrait into the free space on the wall in the room image.
-- Make it look natural and realistic - the painting should appear to be hanging on the wall.
-- Maintain proper perspective and lighting to match the room.
-- The painting should fit naturally into the space provided.
-- Keep the original room atmosphere and style.
-- CRITICAL: Preserve the EXACT original colors of the painting. Do NOT alter, enhance, correct, or modify any colors of the painting itself. The painting colors must remain identical to the source painting image.
-- CRITICAL: Do NOT apply any color correction, white balance adjustment, saturation changes, or any other color modifications to the painting.
-- CRITICAL: Only adjust lighting/shadow on the painting to match the room's lighting, but the painting's colors themselves must remain exactly as they are in the source image.
-- Output a single new image with the painting placed in the room.
+- Place the painting into the free space on the wall in the room image.
+- Make the scene natural.
 PROMPT;
   
   $payload = [
@@ -545,7 +448,7 @@ PROMPT;
         "data:$variantMime;base64,$variantB64",
         "data:$finalMime;base64,$finalB64"
       ],
-      'output_format' => 'png'
+      'output_format' => 'jpg'
     ]
   ];
   
@@ -572,19 +475,7 @@ PROMPT;
     exit;
   }
   
-  // Save as temporary PNG first, then convert to JPG
-  $tempPng = $imagesDir . '/temp_' . uniqid() . '.png';
-  file_put_contents($tempPng, $imgBytes);
-  
-  // Convert to JPG
-  if (!convert_to_jpg($tempPng, $targetPath)) {
-    @unlink($tempPng);
-    http_response_code(500);
-    echo json_encode(['ok' => false, 'error'=>'failed_to_convert_to_jpg']);
-    exit;
-  }
-  
-  @unlink($tempPng);
+  file_put_contents($tempPng, $targetPath);
   
   // Check if this image is already in gallery and update it
   $galleryDir = dirname(__DIR__) . '/img/gallery/';

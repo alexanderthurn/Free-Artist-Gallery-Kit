@@ -616,36 +616,106 @@
 
     async function doAction(image, action, btn) {
       btn.disabled = true;
+      const prevText = btn.textContent;
+      if (action === 'restore') {
+        btn.textContent = 'Wird kopiert…';
+      }
+      
       const body = new FormData();
       body.set('image', image);
       body.set('action', action);
-      const res = await fetch('action.php', { method: 'POST', body });
-      btn.disabled = false;
-      if (!res.ok) {
-        const msg = await res.text();
-        showToast('Fehler: ' + msg, 'error');
-        return;
-      }
-      const data = await res.json().catch(() => ({}));
-      if (!data.ok) {
-        showToast('Fehler: ' + (data.error || 'Unknown'), 'error');
-        return;
-      }
-      if (action === 'restore') {
-        showToast('Originalbild erfolgreich verwendet', 'success');
-      }
-      await refresh();
-      // Force reload the main image after refresh (especially for restore action)
-      if (action === 'restore') {
-        // Extract base name: remove _original, _color, _final, or _variant_* suffix and extension
-        const base = image.replace(/_variant_[^_]+\.(jpg|jpeg|png)$/i, '').replace(/_(original|color|final)\.(jpg|jpeg|png)$/i, '').replace(/\.(jpg|jpeg|png)$/i, '');
-        const mainImg = document.getElementById(`main-img-${base}`);
-        if (mainImg) {
-          // Force reload by adding/updating cache-busting parameter
-          const currentSrc = mainImg.src;
-          const separator = currentSrc.includes('?') ? '&' : '?';
-          mainImg.src = currentSrc.split('?')[0] + separator + 't=' + Date.now();
+      
+      try {
+        const res = await fetch('action.php', { method: 'POST', body });
+        if (!res.ok) {
+          const msg = await res.text();
+          showToast('Fehler: ' + msg, 'error');
+          return;
         }
+        const data = await res.json().catch(() => ({}));
+        if (!data.ok) {
+          showToast('Fehler: ' + (data.error || 'Unknown'), 'error');
+          return;
+        }
+        
+        if (action === 'restore') {
+          showToast('Originalbild wird geladen…', 'info');
+          
+          // Extract base name: remove _original, _color, _final, or _variant_* suffix and extension
+          const base = image.replace(/_variant_[^_]+\.(jpg|jpeg|png)$/i, '').replace(/_(original|color|final)\.(jpg|jpeg|png)$/i, '').replace(/\.(jpg|jpeg|png)$/i, '');
+          
+          // Wait a bit for the file copy operation to complete on the server
+          await new Promise(resolve => setTimeout(resolve, 300));
+          
+          // Update only the affected image row instead of full page reload
+          await updateImageRow(base);
+          
+          // Wait for the DOM to be updated
+          await new Promise(resolve => setTimeout(resolve, 50));
+          
+          // Find the main image and wait for it to load
+          const mainImg = document.getElementById(`main-img-${base}`);
+          if (mainImg) {
+            // Show loading state
+            mainImg.style.opacity = '0.5';
+            mainImg.style.transition = 'opacity 0.3s ease';
+            
+            // Get the base URL without query string
+            const baseUrl = mainImg.src.split('?')[0];
+            const freshUrl = baseUrl + '?t=' + Date.now();
+            
+            // Preload the image to ensure it's ready before showing it
+            await new Promise((resolve) => {
+              // Check if image is already complete
+              if (mainImg.complete && mainImg.naturalWidth > 0) {
+                // Image is already loaded, just update src and show
+                mainImg.src = freshUrl;
+                mainImg.style.opacity = '1';
+                showToast('Originalbild erfolgreich verwendet', 'success');
+                resolve();
+                return;
+              }
+              
+              // Preload the image
+              const img = new Image();
+              img.onload = () => {
+                // Image is loaded, now update the displayed image
+                mainImg.src = freshUrl;
+                mainImg.style.opacity = '1';
+                showToast('Originalbild erfolgreich verwendet', 'success');
+                resolve();
+              };
+              img.onerror = () => {
+                // Retry once after a short delay
+                setTimeout(() => {
+                  const retryImg = new Image();
+                  retryImg.onload = () => {
+                    mainImg.src = freshUrl;
+                    mainImg.style.opacity = '1';
+                    showToast('Originalbild erfolgreich verwendet', 'success');
+                    resolve();
+                  };
+                  retryImg.onerror = () => {
+                    mainImg.style.opacity = '1';
+                    showToast('Originalbild verwendet, aber Bild konnte nicht geladen werden. Bitte Seite aktualisieren.', 'error');
+                    resolve(); // Still resolve to not block
+                  };
+                  retryImg.src = freshUrl;
+                }, 500);
+              };
+              img.src = freshUrl;
+            });
+          } else {
+            // Fallback: full refresh if image element not found
+            await refresh();
+            showToast('Originalbild erfolgreich verwendet', 'success');
+          }
+        } else {
+          await refresh();
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevText;
       }
     }
 

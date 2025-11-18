@@ -190,6 +190,17 @@
               Verkauft
             </label>
           </div>
+          ${meta.manual_corners && Array.isArray(meta.manual_corners) && meta.manual_corners.length === 4 ? `
+          <div class="field" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #eee;">
+            <label style="font-size: 11px; color: #666; margin-bottom: 4px;">Manuelle Ecken-Positionen:</label>
+            <div style="font-size: 11px; color: #888; font-family: monospace;">
+              Oben links: (${meta.manual_corners[0][0]}, ${meta.manual_corners[0][1]})<br>
+              Oben rechts: (${meta.manual_corners[1][0]}, ${meta.manual_corners[1][1]})<br>
+              Unten rechts: (${meta.manual_corners[2][0]}, ${meta.manual_corners[2][1]})<br>
+              Unten links: (${meta.manual_corners[3][0]}, ${meta.manual_corners[3][1]})
+            </div>
+          </div>
+          ` : ''}
           <div class="row" style="justify-content:flex-end;">
             <button type="button" onclick='saveMeta(${JSON.stringify(originalVariant.name)}, this)'>Speichern</button>
           </div>
@@ -202,6 +213,7 @@
             <button type="button" onclick='doAction(${JSON.stringify(originalVariant.name)}, "room", this)'>Varianten generieren</button>
             <button type="button" onclick='doAction(${JSON.stringify(originalVariant.name)}, "restore", this)'>Originalbild verwenden</button>
             <button type="button" onclick='doCorners(${JSON.stringify(originalVariant.name)}, this)'>KI Bild freistellen lassen</button>
+            <button type="button" onclick='doManualFree(${JSON.stringify(originalVariant.name)}, this)'>Bild von Hand freistellen</button>
             ${finalVariant ? `<button type="button" onclick='addWatermark(${JSON.stringify(finalVariant.name)}, ${JSON.stringify(g.base)}, this)'>Wasserzeichen einfügen</button>` : ''}
             <button type="button" onclick='fillFormWithAI(${JSON.stringify(originalVariant.name)}, this)'>KI Formular ausfüllen lassen</button>
             ${g.in_gallery ? 
@@ -674,6 +686,12 @@
         btn.disabled = false;
         btn.textContent = prev;
       }
+    }
+
+    function doManualFree(imageOriginalName, btn) {
+      // Extract base name: remove _original, _color, _final, or _variant_* suffix and extension
+      const base = imageOriginalName.replace(/_variant_[^_]+\.(jpg|jpeg|png)$/i, '').replace(/_(original|color|final)\.(jpg|jpeg|png)$/i, '').replace(/\.(jpg|jpeg|png)$/i, '');
+      window.location.href = `free.html?painting=${encodeURIComponent(base)}`;
     }
 
     async function addWatermark(finalImageName, imageBaseName, btn) {

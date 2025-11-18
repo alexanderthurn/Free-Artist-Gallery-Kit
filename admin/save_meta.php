@@ -53,6 +53,11 @@ if (isset($existingMeta['original_filename'])) {
     $data['original_filename'] = extract_base_name($image);
 }
 
+// Preserve manual_corners if they exist
+if (isset($existingMeta['manual_corners'])) {
+    $data['manual_corners'] = $existingMeta['manual_corners'];
+}
+
 $ok = (bool)file_put_contents($metaPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 if (!$ok) {
     http_response_code(500);

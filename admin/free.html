@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bild von Hand freistellen - Herzfabrik</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+      color: #000;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 8px;
+      padding: 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 24px;
+      color: #000;
+    }
+    .controls {
+      margin-bottom: 20px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button {
+      padding: 10px 20px;
+      border: 1px solid #ccc;
+      background: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #000;
+    }
+    button:hover {
+      background: #f0f0f0;
+    }
+    button.primary {
+      background: #666;
+      color: #fff;
+      border-color: #666;
+    }
+    button.primary:hover {
+      background: #555;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .canvas-container {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .canvas-wrapper {
+      flex: 1;
+      min-width: 300px;
+    }
+    .canvas-wrapper h2 {
+      font-size: 16px;
+      margin-bottom: 12px;
+      color: #000;
+    }
+    canvas {
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      cursor: crosshair;
+      max-width: 100%;
+      height: auto;
+      display: block;
+      background: #fafafa;
+    }
+    .instructions {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 20px;
+      color: #333;
+    }
+    .instructions h3 {
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: #000;
+    }
+    .instructions p {
+      font-size: 13px;
+      line-height: 1.5;
+      color: #666;
+    }
+    .error {
+      background: #fff5f5;
+      border: 1px solid #f2c6c6;
+      color: #8a1f1f;
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+    }
+    @media (max-width: 768px) {
+      .canvas-container {
+        flex-direction: column;
+      }
+      .canvas-wrapper {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Bild von Hand freistellen</h1>
+    
+    <div id="error" class="error" style="display: none;"></div>
+    <div id="loading" class="loading">Bild wird geladen...</div>
+    
+    <div id="main-content" style="display: none;">
+      <div class="instructions">
+        <h3>Anleitung:</h3>
+        <p>Klicken Sie auf das Originalbild, um die 4 Ecken des Gemäldes zu markieren. Die Punkte werden in dieser Reihenfolge gesetzt: oben links, oben rechts, unten rechts, unten links. Sie können die Punkte auch per Drag & Drop verschieben. Die Vorschau zeigt das Ergebnis der Extraktion.</p>
+      </div>
+      
+      <div class="controls">
+        <button id="resetBtn">Punkte zurücksetzen</button>
+        <button id="saveBtn" class="primary">Speichern</button>
+        <button onclick="window.location.href='index.html'">Zurück zur Übersicht</button>
+      </div>
+      
+      <div class="canvas-container">
+        <div class="canvas-wrapper">
+          <h2>Originalbild</h2>
+          <canvas id="sourceCanvas"></canvas>
+        </div>
+        <div class="canvas-wrapper">
+          <h2>Vorschau</h2>
+          <canvas id="previewCanvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const paintingBase = urlParams.get('painting');
+    
+    if (!paintingBase) {
+      document.getElementById('error').textContent = 'Kein Gemälde angegeben.';
+      document.getElementById('error').style.display = 'block';
+      document.getElementById('loading').style.display = 'none';
+      throw new Error('No painting parameter');
+    }
+
+    const sourceCanvas = document.getElementById('sourceCanvas');
+    const previewCanvas = document.getElementById('previewCanvas');
+    const sourceCtx = sourceCanvas.getContext('2d');
+    const previewCtx = previewCanvas.getContext('2d');
+    
+    let sourceImage = null;
+    let corners = [
+      { x: 0, y: 0 }, // top-left
+      { x: 0, y: 0 }, // top-right
+      { x: 0, y: 0 }, // bottom-right
+      { x: 0, y: 0 }  // bottom-left
+    ];
+    let currentCornerIndex = 0;
+    let draggedCorner = null;
+    let isDragging = false;
+    let savedCorners = null;
+
+    // Load metadata to get saved corners
+    async function loadMetadata() {
+      try {
+        const metaUrl = `images/${paintingBase}_original.jpg.json?t=${Date.now()}`;
+        const response = await fetch(metaUrl);
+        if (response.ok) {
+          const meta = await response.json();
+          if (meta.manual_corners && Array.isArray(meta.manual_corners) && meta.manual_corners.length === 4) {
+            savedCorners = meta.manual_corners;
+          }
+        }
+      } catch (error) {
+        // Silently fail if metadata doesn't exist
+        console.log('No saved corners found');
+      }
+    }
+
+    // Calculate aspect ratio from corners
+    function calculateAspectRatio(corners) {
+      // Calculate average width (top and bottom edges)
+      const topWidth = Math.sqrt(
+        Math.pow(corners[1].x - corners[0].x, 2) + 
+        Math.pow(corners[1].y - corners[0].y, 2)
+      );
+      const bottomWidth = Math.sqrt(
+        Math.pow(corners[2].x - corners[3].x, 2) + 
+        Math.pow(corners[2].y - corners[3].y, 2)
+      );
+      const avgWidth = (topWidth + bottomWidth) / 2;
+      
+      // Calculate average height (left and right edges)
+      const leftHeight = Math.sqrt(
+        Math.pow(corners[3].x - corners[0].x, 2) + 
+        Math.pow(corners[3].y - corners[0].y, 2)
+      );
+      const rightHeight = Math.sqrt(
+        Math.pow(corners[2].x - corners[1].x, 2) + 
+        Math.pow(corners[2].y - corners[1].y, 2)
+      );
+      const avgHeight = (leftHeight + rightHeight) / 2;
+      
+      return { width: avgWidth, height: avgHeight };
+    }
+
+    // Load original image
+    const originalImageUrl = `images/${paintingBase}_original.jpg`;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    
+    img.onload = async function() {
+      sourceImage = img;
+      
+      // Load saved corners if available
+      await loadMetadata();
+      
+      // Set canvas sizes
+      const maxWidth = 800;
+      const maxHeight = 600;
+      let scale = Math.min(maxWidth / img.width, maxHeight / img.height, 1);
+      
+      sourceCanvas.width = img.width * scale;
+      sourceCanvas.height = img.height * scale;
+      
+      // Draw image on source canvas
+      sourceCtx.drawImage(img, 0, 0, sourceCanvas.width, sourceCanvas.height);
+      
+      // Initialize corners
+      if (savedCorners) {
+        // Scale saved corners from original image coordinates to canvas coordinates
+        const scaleX = sourceCanvas.width / img.width;
+        const scaleY = sourceCanvas.height / img.height;
+        corners[0] = { x: savedCorners[0][0] * scaleX, y: savedCorners[0][1] * scaleY };
+        corners[1] = { x: savedCorners[1][0] * scaleX, y: savedCorners[1][1] * scaleY };
+        corners[2] = { x: savedCorners[2][0] * scaleX, y: savedCorners[2][1] * scaleY };
+        corners[3] = { x: savedCorners[3][0] * scaleX, y: savedCorners[3][1] * scaleY };
+      } else {
+        // Initialize corners to image corners
+        corners[0] = { x: 0, y: 0 }; // top-left
+        corners[1] = { x: sourceCanvas.width, y: 0 }; // top-right
+        corners[2] = { x: sourceCanvas.width, y: sourceCanvas.height }; // bottom-right
+        corners[3] = { x: 0, y: sourceCanvas.height }; // bottom-left
+      }
+      
+      updatePreview();
+      drawCorners();
+      
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('main-content').style.display = 'block';
+    };
+    
+    img.onerror = function() {
+      document.getElementById('error').textContent = 'Fehler beim Laden des Bildes. Stellen Sie sicher, dass die Datei existiert.';
+      document.getElementById('error').style.display = 'block';
+      document.getElementById('loading').style.display = 'none';
+    };
+    
+    img.src = originalImageUrl + '?t=' + Date.now();
+
+    function drawCorners() {
+      if (!sourceImage) return;
+      
+      // Redraw image
+      sourceCtx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+      sourceCtx.drawImage(sourceImage, 0, 0, sourceCanvas.width, sourceCanvas.height);
+      
+      // Draw quadrilateral
+      sourceCtx.strokeStyle = '#00ff00';
+      sourceCtx.lineWidth = 2;
+      sourceCtx.beginPath();
+      sourceCtx.moveTo(corners[0].x, corners[0].y);
+      for (let i = 1; i < 4; i++) {
+        sourceCtx.lineTo(corners[i].x, corners[i].y);
+      }
+      sourceCtx.closePath();
+      sourceCtx.stroke();
+      
+      // Draw corner points
+      const pointRadius = 8;
+      corners.forEach((corner, index) => {
+        sourceCtx.fillStyle = index === currentCornerIndex ? '#ff0000' : '#00ff00';
+        sourceCtx.beginPath();
+        sourceCtx.arc(corner.x, corner.y, pointRadius, 0, Math.PI * 2);
+        sourceCtx.fill();
+        sourceCtx.strokeStyle = '#fff';
+        sourceCtx.lineWidth = 2;
+        sourceCtx.stroke();
+      });
+    }
+
+    function updatePreview() {
+      if (!sourceImage) return;
+      
+      // Calculate source coordinates (in original image dimensions)
+      const scaleX = sourceImage.width / sourceCanvas.width;
+      const scaleY = sourceImage.height / sourceCanvas.height;
+      
+      const srcCorners = corners.map(c => ({
+        x: c.x * scaleX,
+        y: c.y * scaleY
+      }));
+      
+      // Calculate aspect ratio from corners
+      const aspectRatio = calculateAspectRatio(srcCorners);
+      
+      // Set preview canvas size based on calculated aspect ratio
+      // Scale to fit within max dimensions while maintaining aspect ratio
+      const maxPreviewWidth = 800;
+      const maxPreviewHeight = 600;
+      let previewScale = Math.min(maxPreviewWidth / aspectRatio.width, maxPreviewHeight / aspectRatio.height, 1);
+      
+      const previewWidth = Math.round(aspectRatio.width * previewScale);
+      const previewHeight = Math.round(aspectRatio.height * previewScale);
+      
+      // Only resize if dimensions changed to avoid unnecessary redraws
+      if (previewCanvas.width !== previewWidth || previewCanvas.height !== previewHeight) {
+        previewCanvas.width = previewWidth;
+        previewCanvas.height = previewHeight;
+      }
+      
+      // Create temporary canvas for perspective transformation
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = sourceImage.width;
+      tempCanvas.height = sourceImage.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      
+      // Draw source image
+      tempCtx.drawImage(sourceImage, 0, 0);
+      
+      // Get image data
+      const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+      
+      // Create output image data
+      const outputData = previewCtx.createImageData(previewCanvas.width, previewCanvas.height);
+      
+      // Perform perspective transformation
+      // Using bilinear interpolation for better quality
+      for (let y = 0; y < previewCanvas.height; y++) {
+        for (let x = 0; x < previewCanvas.width; x++) {
+          // Normalized coordinates in destination (0-1)
+          const u = x / previewCanvas.width;
+          const v = y / previewCanvas.height;
+          
+          // Calculate corresponding point in source using bilinear interpolation
+          // Top edge
+          const topX = srcCorners[0].x + (srcCorners[1].x - srcCorners[0].x) * u;
+          const topY = srcCorners[0].y + (srcCorners[1].y - srcCorners[0].y) * u;
+          
+          // Bottom edge
+          const bottomX = srcCorners[3].x + (srcCorners[2].x - srcCorners[3].x) * u;
+          const bottomY = srcCorners[3].y + (srcCorners[2].y - srcCorners[3].y) * u;
+          
+          // Interpolate between top and bottom
+          const srcX = topX + (bottomX - topX) * v;
+          const srcY = topY + (bottomY - topY) * v;
+          
+          // Get pixel from source
+          const srcPixelX = Math.floor(srcX);
+          const srcPixelY = Math.floor(srcY);
+          
+          if (srcPixelX >= 0 && srcPixelX < tempCanvas.width && srcPixelY >= 0 && srcPixelY < tempCanvas.height) {
+            const srcIndex = (srcPixelY * tempCanvas.width + srcPixelX) * 4;
+            const dstIndex = (y * previewCanvas.width + x) * 4;
+            
+            outputData.data[dstIndex] = imageData.data[srcIndex];
+            outputData.data[dstIndex + 1] = imageData.data[srcIndex + 1];
+            outputData.data[dstIndex + 2] = imageData.data[srcIndex + 2];
+            outputData.data[dstIndex + 3] = imageData.data[srcIndex + 3];
+          }
+        }
+      }
+      
+      previewCtx.putImageData(outputData, 0, 0);
+    }
+
+    function getCornerAt(x, y) {
+      const threshold = 15;
+      for (let i = 0; i < corners.length; i++) {
+        const dx = corners[i].x - x;
+        const dy = corners[i].y - y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < threshold) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    sourceCanvas.addEventListener('mousedown', (e) => {
+      const rect = sourceCanvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const cornerIndex = getCornerAt(x, y);
+      if (cornerIndex !== -1) {
+        draggedCorner = cornerIndex;
+        isDragging = true;
+        currentCornerIndex = cornerIndex;
+      } else {
+        // Set new corner position
+        corners[currentCornerIndex] = { x, y };
+        currentCornerIndex = (currentCornerIndex + 1) % 4;
+      }
+      
+      drawCorners();
+      updatePreview();
+    });
+
+    sourceCanvas.addEventListener('mousemove', (e) => {
+      const rect = sourceCanvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      if (isDragging && draggedCorner !== null) {
+        corners[draggedCorner] = { x, y };
+        drawCorners();
+        updatePreview();
+      } else {
+        // Change cursor if over a corner
+        const cornerIndex = getCornerAt(x, y);
+        sourceCanvas.style.cursor = cornerIndex !== -1 ? 'move' : 'crosshair';
+      }
+    });
+
+    sourceCanvas.addEventListener('mouseup', () => {
+      isDragging = false;
+      draggedCorner = null;
+    });
+
+    sourceCanvas.addEventListener('mouseleave', () => {
+      isDragging = false;
+      draggedCorner = null;
+    });
+
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      corners[0] = { x: 0, y: 0 };
+      corners[1] = { x: sourceCanvas.width, y: 0 };
+      corners[2] = { x: sourceCanvas.width, y: sourceCanvas.height };
+      corners[3] = { x: 0, y: sourceCanvas.height };
+      currentCornerIndex = 0;
+      drawCorners();
+      updatePreview();
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('saveBtn');
+      btn.disabled = true;
+      btn.textContent = 'Speichere...';
+      
+      try {
+        // Calculate source corners in original image coordinates
+        const scaleX = sourceImage.width / sourceCanvas.width;
+        const scaleY = sourceImage.height / sourceCanvas.height;
+        
+        const srcCorners = corners.map(c => ({
+          x: c.x * scaleX,
+          y: c.y * scaleY
+        }));
+        
+        // Calculate aspect ratio from corners
+        const aspectRatio = calculateAspectRatio(srcCorners);
+        
+        // Create a high-resolution canvas for the final image
+        // Use calculated aspect ratio, but scale up to use full resolution
+        // Determine scale factor to maximize resolution while maintaining aspect ratio
+        const maxDimension = Math.max(sourceImage.width, sourceImage.height);
+        const scaleFactor = Math.min(maxDimension / aspectRatio.width, maxDimension / aspectRatio.height);
+        
+        const finalCanvas = document.createElement('canvas');
+        finalCanvas.width = Math.round(aspectRatio.width * scaleFactor);
+        finalCanvas.height = Math.round(aspectRatio.height * scaleFactor);
+        const finalCtx = finalCanvas.getContext('2d');
+        
+        // Create temporary canvas with source image
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = sourceImage.width;
+        tempCanvas.height = sourceImage.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // Draw source image
+        tempCtx.drawImage(sourceImage, 0, 0);
+        
+        // Get image data
+        const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+        
+        // Create output image data
+        const outputData = finalCtx.createImageData(finalCanvas.width, finalCanvas.height);
+        
+        // Perform perspective transformation
+        for (let y = 0; y < finalCanvas.height; y++) {
+          for (let x = 0; x < finalCanvas.width; x++) {
+            const u = x / finalCanvas.width;
+            const v = y / finalCanvas.height;
+            
+            const topX = srcCorners[0].x + (srcCorners[1].x - srcCorners[0].x) * u;
+            const topY = srcCorners[0].y + (srcCorners[1].y - srcCorners[0].y) * u;
+            
+            const bottomX = srcCorners[3].x + (srcCorners[2].x - srcCorners[3].x) * u;
+            const bottomY = srcCorners[3].y + (srcCorners[2].y - srcCorners[3].y) * u;
+            
+            const srcX = topX + (bottomX - topX) * v;
+            const srcY = topY + (bottomY - topY) * v;
+            
+            const srcPixelX = Math.floor(srcX);
+            const srcPixelY = Math.floor(srcY);
+            
+            if (srcPixelX >= 0 && srcPixelX < tempCanvas.width && srcPixelY >= 0 && srcPixelY < tempCanvas.height) {
+              const srcIndex = (srcPixelY * tempCanvas.width + srcPixelX) * 4;
+              const dstIndex = (y * finalCanvas.width + x) * 4;
+              
+              outputData.data[dstIndex] = imageData.data[srcIndex];
+              outputData.data[dstIndex + 1] = imageData.data[srcIndex + 1];
+              outputData.data[dstIndex + 2] = imageData.data[srcIndex + 2];
+              outputData.data[dstIndex + 3] = imageData.data[srcIndex + 3];
+            }
+          }
+        }
+        
+        finalCtx.putImageData(outputData, 0, 0);
+        
+        // Convert to blob
+        finalCanvas.toBlob(async (blob) => {
+          if (!blob) {
+            throw new Error('Fehler beim Erstellen des Bildes');
+          }
+          
+          // Prepare corner positions (in original image coordinates)
+          const cornerPositions = srcCorners.map(c => [Math.round(c.x), Math.round(c.y)]);
+          
+          // Send to server
+          const formData = new FormData();
+          formData.append('image', blob, `${paintingBase}_final.jpg`);
+          formData.append('base', paintingBase);
+          formData.append('corners', JSON.stringify(cornerPositions));
+          
+          const response = await fetch('save_free.php', {
+            method: 'POST',
+            body: formData
+          });
+          
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || 'Fehler beim Speichern');
+          }
+          
+          const result = await response.json();
+          if (!result.ok) {
+            throw new Error(result.error || 'Fehler beim Speichern');
+          }
+          
+          alert('Bild erfolgreich gespeichert!');
+          window.location.href = 'index.html';
+        }, 'image/jpeg', 0.95);
+      } catch (error) {
+        alert('Fehler: ' + error.message);
+        btn.disabled = false;
+        btn.textContent = 'Speichern';
+      }
+    });
+  </script>
+</body>
+</html>
+

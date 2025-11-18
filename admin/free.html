@@ -406,6 +406,8 @@
     function getCornerAt(x, y, isTouch = false) {
       let closestIndex = -1;
       let closestDist = Infinity;
+      // Match the visual circle radius (8px) with a small buffer
+      const mouseThreshold = 12;
       
       // Always check all 4 corners
       for (let i = 0; i < corners.length; i++) {
@@ -420,9 +422,8 @@
             closestIndex = i;
           }
         } else {
-          // For mouse: use threshold
-          const threshold = 15;
-          if (dist < threshold && dist < closestDist) {
+          // For mouse: only consider corners within threshold (matching visual circle size)
+          if (dist < mouseThreshold && dist < closestDist) {
             closestDist = dist;
             closestIndex = i;
           }
@@ -430,8 +431,13 @@
       }
       
       // For touch, always return the closest corner (even if far away)
-      // For mouse, only return if within threshold
-      return isTouch ? closestIndex : (closestDist < Infinity ? closestIndex : -1);
+      // For mouse, only return if within threshold (closestDist must be < mouseThreshold)
+      if (isTouch) {
+        return closestIndex;
+      } else {
+        // Only return corner if it's actually within the threshold
+        return closestDist < mouseThreshold ? closestIndex : -1;
+      }
     }
 
     function getCanvasCoordinates(e) {
@@ -472,14 +478,16 @@
         draggedCorner = cornerIndex;
         isDragging = true;
         currentCornerIndex = cornerIndex;
-      } else {
-        // Set new corner position
+        drawCorners();
+        updatePreview();
+      } else if (isTouch) {
+        // For touch only: Set new corner position when clicking away from corners
         corners[currentCornerIndex] = { x, y };
         currentCornerIndex = (currentCornerIndex + 1) % 4;
+        drawCorners();
+        updatePreview();
       }
-      
-      drawCorners();
-      updatePreview();
+      // For mouse: do nothing if no corner is detected (don't move corners)
     }
 
     function handlePointerMove(x, y, isTouch = false) {

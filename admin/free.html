@@ -83,6 +83,10 @@
       height: auto;
       display: block;
       background: #fafafa;
+      touch-action: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
     .instructions {
       background: #f9f9f9;
@@ -399,25 +403,71 @@
       previewCtx.putImageData(outputData, 0, 0);
     }
 
-    function getCornerAt(x, y) {
-      const threshold = 15;
+    function getCornerAt(x, y, isTouch = false) {
+      let closestIndex = -1;
+      let closestDist = Infinity;
+      
+      // Always check all 4 corners
       for (let i = 0; i < corners.length; i++) {
         const dx = corners[i].x - x;
         const dy = corners[i].y - y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < threshold) {
-          return i;
+        
+        if (isTouch) {
+          // For touch: always find the closest corner, regardless of distance
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestIndex = i;
+          }
+        } else {
+          // For mouse: use threshold
+          const threshold = 15;
+          if (dist < threshold && dist < closestDist) {
+            closestDist = dist;
+            closestIndex = i;
+          }
         }
       }
-      return -1;
+      
+      // For touch, always return the closest corner (even if far away)
+      // For mouse, only return if within threshold
+      return isTouch ? closestIndex : (closestDist < Infinity ? closestIndex : -1);
     }
 
-    sourceCanvas.addEventListener('mousedown', (e) => {
+    function getCanvasCoordinates(e) {
       const rect = sourceCanvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      let clientX, clientY;
+      let isTouch = false;
       
-      const cornerIndex = getCornerAt(x, y);
+      if (e.touches && e.touches.length > 0) {
+        // Touch event
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+        isTouch = true;
+      } else {
+        // Mouse event
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+      
+      // Get coordinates relative to the canvas element
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      
+      // Calculate scale factor between displayed size and actual canvas size
+      const scaleX = sourceCanvas.width / rect.width;
+      const scaleY = sourceCanvas.height / rect.height;
+      
+      // Scale coordinates to match canvas internal dimensions
+      return {
+        x: x * scaleX,
+        y: y * scaleY,
+        isTouch: isTouch
+      };
+    }
+
+    function handlePointerDown(x, y, isTouch = false) {
+      const cornerIndex = getCornerAt(x, y, isTouch);
       if (cornerIndex !== -1) {
         draggedCorner = cornerIndex;
         isDragging = true;
@@ -430,33 +480,68 @@
       
       drawCorners();
       updatePreview();
-    });
+    }
 
-    sourceCanvas.addEventListener('mousemove', (e) => {
-      const rect = sourceCanvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      
+    function handlePointerMove(x, y, isTouch = false) {
       if (isDragging && draggedCorner !== null) {
         corners[draggedCorner] = { x, y };
         drawCorners();
         updatePreview();
       } else {
-        // Change cursor if over a corner
-        const cornerIndex = getCornerAt(x, y);
+        // Change cursor if over a corner (desktop only)
+        const cornerIndex = getCornerAt(x, y, isTouch);
         sourceCanvas.style.cursor = cornerIndex !== -1 ? 'move' : 'crosshair';
       }
-    });
+    }
 
-    sourceCanvas.addEventListener('mouseup', () => {
+    function handlePointerUp() {
       isDragging = false;
       draggedCorner = null;
+    }
+
+    // Mouse events
+    sourceCanvas.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const { x, y, isTouch } = getCanvasCoordinates(e);
+      handlePointerDown(x, y, isTouch);
+    });
+
+    sourceCanvas.addEventListener('mousemove', (e) => {
+      const { x, y, isTouch } = getCanvasCoordinates(e);
+      handlePointerMove(x, y, isTouch);
+    });
+
+    sourceCanvas.addEventListener('mouseup', (e) => {
+      e.preventDefault();
+      handlePointerUp();
     });
 
     sourceCanvas.addEventListener('mouseleave', () => {
-      isDragging = false;
-      draggedCorner = null;
+      handlePointerUp();
     });
+
+    // Touch events
+    sourceCanvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const { x, y, isTouch } = getCanvasCoordinates(e);
+      handlePointerDown(x, y, isTouch);
+    }, { passive: false });
+
+    sourceCanvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const { x, y, isTouch } = getCanvasCoordinates(e);
+      handlePointerMove(x, y, isTouch);
+    }, { passive: false });
+
+    sourceCanvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      handlePointerUp();
+    }, { passive: false });
+
+    sourceCanvas.addEventListener('touchcancel', (e) => {
+      e.preventDefault();
+      handlePointerUp();
+    }, { passive: false });
 
     document.getElementById('resetBtn').addEventListener('click', () => {
       corners[0] = { x: 0, y: 0 };

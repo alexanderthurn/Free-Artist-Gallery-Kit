@@ -19,8 +19,8 @@ $filename = basename($_POST['filename']);
 $uploadDir = dirname(__DIR__) . '/img/upload';
 $filePath = $uploadDir . '/' . $filename;
 
-// Validate filename (must start with upload_)
-if (strpos($filename, 'upload_') !== 0) {
+// Validate filename - prevent directory traversal (basename already normalizes, but check for '..' as extra security)
+if (strpos($filename, '..') !== false || $filename === '' || $filename === '.') {
     http_response_code(400);
     echo json_encode(['ok' => false, 'error' => 'Invalid filename']);
     exit;
@@ -38,6 +38,13 @@ if (!unlink($filePath)) {
     http_response_code(500);
     echo json_encode(['ok' => false, 'error' => 'Failed to delete file']);
     exit;
+}
+
+// Also delete thumbnail if it exists (pattern: filename_thumb.ext)
+$pathInfo = pathinfo($filePath);
+$thumbPath = $pathInfo['dirname'] . '/' . $pathInfo['filename'] . '_thumb.' . $pathInfo['extension'];
+if (file_exists($thumbPath)) {
+    unlink($thumbPath);
 }
 
 echo json_encode([

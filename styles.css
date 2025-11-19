@@ -712,7 +712,7 @@ main {
     0 2px 4px rgba(0, 0, 0, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.5);
   position: relative;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: none;
   transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
@@ -726,7 +726,7 @@ main {
 /* Frame Types */
 .painting-frame.frame-white {
   background: #f8f8f8;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: none;
   box-shadow: 
     0 4px 12px rgba(0, 0, 0, 0.12),
     0 2px 4px rgba(0, 0, 0, 0.08),
@@ -742,7 +742,7 @@ main {
 
 .painting-frame.frame-black {
   background: #1a1a1a;
-  border: 3px solid #0a0a0a;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(0, 0, 0, 0.4),
     0 2px 4px rgba(0, 0, 0, 0.3),
@@ -760,7 +760,7 @@ main {
 
 .painting-frame.frame-wood {
   background: #c19a6b;
-  border: 3px solid #8b6f47;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(0, 0, 0, 0.25),
     0 2px 4px rgba(0, 0, 0, 0.2),
@@ -797,7 +797,7 @@ main {
   background: 
     radial-gradient(ellipse at top, rgba(255, 255, 255, 0.3) 0%, transparent 50%),
     linear-gradient(135deg, #f5d76e 0%, #d4af37 30%, #b8941f 60%, #d4af37 100%);
-  border: 3px solid #9d7a1a;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(184, 148, 31, 0.35),
     0 2px 4px rgba(0, 0, 0, 0.2),
@@ -819,7 +819,7 @@ main {
   background: 
     linear-gradient(135deg, #f0f0f0 0%, #d0d0d0 25%, #b0b0b0 50%, #d0d0d0 75%, #f0f0f0 100%),
     linear-gradient(45deg, rgba(255, 255, 255, 0.3) 0%, transparent 50%);
-  border: 3px solid #707070;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(0, 0, 0, 0.25),
     0 2px 4px rgba(0, 0, 0, 0.18),
@@ -839,7 +839,7 @@ main {
 
 .painting-frame.frame-walnut {
   background: #5c4033;
-  border: 3px solid #3d2a22;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(0, 0, 0, 0.3),
     0 2px 4px rgba(0, 0, 0, 0.25),
@@ -874,7 +874,7 @@ main {
 
 .painting-frame.frame-oak {
   background: #d4a574;
-  border: 3px solid #b8966a;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(0, 0, 0, 0.22),
     0 2px 4px rgba(0, 0, 0, 0.18),
@@ -912,7 +912,7 @@ main {
     radial-gradient(ellipse at 30% 30%, rgba(255, 255, 255, 0.4) 0%, transparent 40%),
     radial-gradient(ellipse at 70% 70%, rgba(0, 0, 0, 0.1) 0%, transparent 40%),
     linear-gradient(135deg, #ffd700 0%, #ffed4e 20%, #d4af37 40%, #b8941f 60%, #d4af37 80%, #ffd700 100%);
-  border: 4px solid #9d7a1a;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(184, 148, 31, 0.4),
     0 2px 4px rgba(0, 0, 0, 0.25),
@@ -934,7 +934,7 @@ main {
 
 .painting-frame.frame-natural {
   background: #f5f0e8;
-  border: 2px solid #e8ddd4;
+  border: none;
   box-shadow: 
     0 4px 12px rgba(0, 0, 0, 0.1),
     0 2px 4px rgba(0, 0, 0, 0.08),

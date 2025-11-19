@@ -47,10 +47,11 @@ if (function_exists('fastcgi_finish_request')) {
 // Get action parameter
 $action = $_POST['action'] ?? 'both';
 $preview = isset($_POST['preview']) && $_POST['preview'] === '1';
+$force = isset($_POST['force']) && $_POST['force'] === '1';
 
 // If preview mode, return what will be processed
 if ($preview) {
-    $previewData = preview_processing($action);
+    $previewData = preview_processing($action, $force);
     ob_clean(); // Ensure no extra output
     echo json_encode([
         'ok' => true,
@@ -80,35 +81,112 @@ if (function_exists('fastcgi_finish_request')) {
 }
 
 // Start background processing
-process_images($action);
+process_images($action, $force);
 
 /**
  * Preview what will be processed (without actually processing)
  */
-function preview_processing(string $action): array {
+function preview_processing(string $action, bool $force = false): array {
     global $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT;
     global $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT;
     
     $result = [
         'optimize' => [
-            'gallery' => ['images' => [], 'thumbnails' => []],
+            'gallery' => ['images' => [], 'thumbnails' => [], 'rebuild' => false],
             'upload' => ['images' => [], 'thumbnails' => []]
         ],
         'cleanup' => ['files_to_delete' => []]
     ];
     
     if ($action === 'optimize' || $action === 'both') {
-        // Preview gallery images
-        $galleryDir = dirname(__DIR__).'/img/gallery/';
-        if (is_dir($galleryDir)) {
-            $galleryPreview = preview_directory($galleryDir, $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT);
-            $result['optimize']['gallery'] = $galleryPreview;
+        // If force, gallery will be rebuilt
+        if ($force) {
+            $result['optimize']['gallery']['rebuild'] = true;
+            // Preview will show what will be rebuilt - we need to check admin/images
+            $imagesDir = __DIR__.'/images/';
+            if (is_dir($imagesDir)) {
+                $adminFiles = scandir($imagesDir) ?: [];
+                $galleryPreview = ['images' => [], 'thumbnails' => []];
+                $processedBases = [];
+                
+                foreach ($adminFiles as $file) {
+                    if ($file === '.' || $file === '..') continue;
+                    if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
+                    
+                    $jsonStem = pathinfo($file, PATHINFO_FILENAME);
+                    // Remove _original, _color, _final suffixes to get the true base name
+                    $base = preg_replace('/_(original|color|final)$/', '', $jsonStem);
+                    
+                    if (in_array($base, $processedBases, true)) continue;
+                    
+                    // Check if there's a _final image
+                    $hasFinal = false;
+                    foreach ($adminFiles as $imgFile) {
+                        if ($imgFile === '.' || $imgFile === '..') continue;
+                        $imgStem = pathinfo($imgFile, PATHINFO_FILENAME);
+                        if (strpos($imgStem, $base.'_final') === 0) {
+                            $hasFinal = true;
+                            // Preview this image
+                            $filePath = $imagesDir.$imgFile;
+                            $imageInfo = @getimagesize($filePath);
+                            if ($imageInfo !== false) {
+                                $currentWidth = $imageInfo[0];
+                                $currentHeight = $imageInfo[1];
+                                
+                                // Calculate new size (will be resized to max dimensions)
+                                $needsResize = $currentWidth > $GALLERY_MAX_WIDTH || $currentHeight > $GALLERY_MAX_HEIGHT;
+                                $newWidth = $currentWidth;
+                                $newHeight = $currentHeight;
+                                if ($needsResize) {
+                                    $scale = min($GALLERY_MAX_WIDTH / $currentWidth, $GALLERY_MAX_HEIGHT / $currentHeight);
+                                    $newWidth = (int) floor($currentWidth * $scale);
+                                    $newHeight = (int) floor($currentHeight * $scale);
+                                }
+                                
+                                $galleryPreview['images'][] = [
+                                    'file' => $imgFile,
+                                    'current_size' => $currentWidth . 'x' . $currentHeight,
+                                    'needs_resize' => $needsResize || $force, // Force will recompress even if within limits
+                                    'new_size' => ($needsResize || $force) ? ($newWidth . 'x' . $newHeight) : null
+                                ];
+                                
+                                // Preview thumbnail
+                                $thumbScale = min($THUMBNAIL_MAX_WIDTH / $currentWidth, $THUMBNAIL_MAX_HEIGHT / $currentHeight);
+                                $thumbWidth = (int) floor($currentWidth * $thumbScale);
+                                $thumbHeight = (int) floor($currentHeight * $thumbScale);
+                                $galleryPreview['thumbnails'][] = [
+                                    'file' => pathinfo($imgFile, PATHINFO_FILENAME) . '_thumb.' . pathinfo($imgFile, PATHINFO_EXTENSION),
+                                    'source' => $imgFile,
+                                    'size' => $thumbWidth . 'x' . $thumbHeight,
+                                    'exists' => false,
+                                    'action' => 'create',
+                                    'needs_update' => true
+                                ];
+                            }
+                            break;
+                        }
+                    }
+                    
+                    if ($hasFinal) {
+                        $processedBases[] = $base;
+                    }
+                }
+                
+                $result['optimize']['gallery'] = array_merge($result['optimize']['gallery'], $galleryPreview);
+            }
+        } else {
+            // Preview gallery images normally
+            $galleryDir = dirname(__DIR__).'/img/gallery/';
+            if (is_dir($galleryDir)) {
+                $galleryPreview = preview_directory($galleryDir, $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
+                $result['optimize']['gallery'] = array_merge($result['optimize']['gallery'], $galleryPreview);
+            }
         }
         
         // Preview upload images
         $uploadDir = dirname(__DIR__).'/img/upload/';
         if (is_dir($uploadDir)) {
-            $uploadPreview = preview_directory($uploadDir, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT);
+            $uploadPreview = preview_directory($uploadDir, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
             $result['optimize']['upload'] = $uploadPreview;
         }
     }
@@ -123,7 +201,7 @@ function preview_processing(string $action): array {
 /**
  * Preview directory processing
  */
-function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thumbMaxWidth, int $thumbMaxHeight): array {
+function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thumbMaxWidth, int $thumbMaxHeight, bool $force = false): array {
     $files = scandir($dir) ?: [];
     $images = [];
     $thumbnails = [];
@@ -170,7 +248,13 @@ function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
         $needsThumbUpdate = false;
         $thumbAction = 'create';
         
-        if ($thumbExists) {
+        if ($force) {
+            // Force regeneration: always mark for update
+            if ($thumbExists) {
+                $needsThumbUpdate = true;
+                $thumbAction = 'regenerate';
+            }
+        } else if ($thumbExists) {
             // Check thumbnail dimensions
             $thumbInfo = @getimagesize($thumbPath);
             if ($thumbInfo !== false) {
@@ -362,23 +446,154 @@ function preview_cleanup(): array {
 }
 
 /**
+ * Rebuild gallery from admin images
+ * Deletes all files in gallery directory and rebuilds from admin/images
+ * Only rebuilds paintings that were live (existed in gallery) before deletion
+ */
+function rebuild_gallery(): void {
+    $imagesDir = __DIR__.'/images/';
+    $galleryDir = dirname(__DIR__).'/img/gallery/';
+    
+    // Ensure images directory exists
+    if (!is_dir($imagesDir)) {
+        return; // Can't rebuild if source doesn't exist
+    }
+    
+    // Collect which paintings are live by reading JSON files in admin/images
+    // This is the source of truth for live status
+    $livePaintings = [];
+    $adminFiles = scandir($imagesDir) ?: [];
+    foreach ($adminFiles as $file) {
+        if ($file === '.' || $file === '..') continue;
+        if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
+        
+        $jsonPath = $imagesDir.$file;
+        $jsonContent = @file_get_contents($jsonPath);
+        if ($jsonContent === false) continue;
+        
+        $meta = json_decode($jsonContent, true);
+        if (is_array($meta) && isset($meta['live']) && $meta['live'] === true && isset($meta['original_filename'])) {
+            $livePaintings[$meta['original_filename']] = true;
+        }
+    }
+    
+    // Delete ALL content in gallery directory (files and subdirectories)
+    if (is_dir($galleryDir)) {
+        $files = scandir($galleryDir) ?: [];
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..') continue;
+            $filePath = $galleryDir.$file;
+            if (is_file($filePath)) {
+                @unlink($filePath);
+            } elseif (is_dir($filePath)) {
+                // Recursively delete subdirectories
+                $subFiles = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($filePath, RecursiveDirectoryIterator::SKIP_DOTS),
+                    RecursiveIteratorIterator::CHILD_FIRST
+                );
+                foreach ($subFiles as $subFile) {
+                    if ($subFile->isDir()) {
+                        @rmdir($subFile->getRealPath());
+                    } else {
+                        @unlink($subFile->getRealPath());
+                    }
+                }
+                @rmdir($filePath);
+            }
+        }
+    }
+    
+    // Ensure gallery directory exists (create if it was deleted or doesn't exist)
+    if (!is_dir($galleryDir)) {
+        if (!mkdir($galleryDir, 0755, true)) {
+            return; // Failed to create directory
+        }
+    }
+    
+    // Find all _final images in admin/images directory (same approach as copy_to_gallery.php)
+    $adminFiles = scandir($imagesDir) ?: [];
+    $processedBases = [];
+    
+    // First, find all _final images
+    $finalImages = [];
+    foreach ($adminFiles as $file) {
+        if ($file === '.' || $file === '..') continue;
+        if (is_dir($imagesDir.$file)) continue;
+        
+        $fileStem = pathinfo($file, PATHINFO_FILENAME);
+        // Check if this is a _final image (ends with _final)
+        // _final is 6 characters, so check last 6 chars
+        if (substr($fileStem, -6) === '_final') {
+            $finalImages[] = $file;
+        }
+    }
+    
+    // Only rebuild paintings that were live before deletion
+    // If gallery was empty, we can't determine which were live, so don't rebuild anything
+    if (empty($livePaintings)) {
+        return; // Nothing was live, so nothing to rebuild
+    }
+    
+    // Process each _final image
+    foreach ($finalImages as $finalImage) {
+        // Extract base name using the same function as copy_to_gallery.php
+        $base = extract_base_name($finalImage);
+        
+        // Only rebuild if this painting was live before deletion
+        if (!isset($livePaintings[$base])) {
+            continue; // Skip paintings that weren't live
+        }
+        
+        // Skip if we already processed this base
+        if (in_array($base, $processedBases, true)) continue;
+        
+        // Find JSON file using the same function as copy_to_gallery.php
+        $jsonFile = find_json_file($base, $imagesDir);
+        
+        if (!$jsonFile || !is_file($imagesDir.$jsonFile)) {
+            continue; // Skip if no JSON file found
+        }
+        
+        // Load JSON metadata
+        $jsonContent = @file_get_contents($imagesDir.$jsonFile);
+        if ($jsonContent === false) continue;
+        
+        $meta = json_decode($jsonContent, true);
+        if (!is_array($meta) || !isset($meta['title'])) {
+            continue;
+        }
+        
+        // Rebuild this gallery entry (same as copy_to_gallery.php)
+        $result = update_gallery_entry($base, $meta, $imagesDir, $galleryDir);
+        if ($result['ok']) {
+            $processedBases[] = $base;
+        }
+    }
+}
+
+/**
  * Main processing function
  */
-function process_images(string $action): void {
+function process_images(string $action, bool $force = false): void {
     global $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT;
     global $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT;
     
     if ($action === 'optimize' || $action === 'both') {
+        // If force and processing gallery, rebuild gallery first (delete and rebuild from admin/images)
+        if ($force) {
+            rebuild_gallery();
+        }
+        
         // Process gallery images
         $galleryDir = dirname(__DIR__).'/img/gallery/';
         if (is_dir($galleryDir)) {
-            process_directory($galleryDir, $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT);
+            process_directory($galleryDir, $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
         }
         
         // Process upload images
         $uploadDir = dirname(__DIR__).'/img/upload/';
         if (is_dir($uploadDir)) {
-            process_directory($uploadDir, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT);
+            process_directory($uploadDir, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
         }
     }
     
@@ -390,7 +605,7 @@ function process_images(string $action): void {
 /**
  * Process all images in a directory
  */
-function process_directory(string $dir, int $maxWidth, int $maxHeight, int $thumbMaxWidth, int $thumbMaxHeight): void {
+function process_directory(string $dir, int $maxWidth, int $maxHeight, int $thumbMaxWidth, int $thumbMaxHeight, bool $force = false): void {
     $files = scandir($dir) ?: [];
     
     foreach ($files as $file) {
@@ -406,15 +621,15 @@ function process_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
         if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) continue;
         
-        // Resize full image if needed
-        resize_image_max($filePath, $maxWidth, $maxHeight);
+        // Resize full image if needed (force will recompress even if within limits)
+        resize_image_max($filePath, $maxWidth, $maxHeight, $force);
         
-        // Generate thumbnail (only if needed)
+        // Generate thumbnail (only if needed, unless force is true)
         $thumbPath = generate_thumbnail_path($filePath);
         
         // Check if thumbnail needs to be generated/updated
         $needsThumbnail = true;
-        if (is_file($thumbPath)) {
+        if (!$force && is_file($thumbPath)) {
             // Get source image dimensions
             $imageInfo = @getimagesize($filePath);
             if ($imageInfo !== false) {
@@ -458,8 +673,9 @@ function process_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
 /**
  * Resize image to maximum dimensions, maintaining aspect ratio
  * Overwrites original if resizing is needed
+ * If force is true, always resizes even if within limits (recompresses with current quality settings)
  */
-function resize_image_max(string $path, int $maxWidth, int $maxHeight): void {
+function resize_image_max(string $path, int $maxWidth, int $maxHeight, bool $force = false): void {
     $src = image_create_from_any($path);
     if (!$src) return;
     
@@ -467,15 +683,21 @@ function resize_image_max(string $path, int $maxWidth, int $maxHeight): void {
     $srcH = imagesy($src);
     
     // Check if resizing is needed
-    if ($srcW <= $maxWidth && $srcH <= $maxHeight) {
+    if (!$force && $srcW <= $maxWidth && $srcH <= $maxHeight) {
         imagedestroy($src);
         return;
     }
     
     // Calculate new dimensions maintaining aspect ratio
-    $scale = min($maxWidth / $srcW, $maxHeight / $srcH);
-    $newW = (int) floor($srcW * $scale);
-    $newH = (int) floor($srcH * $scale);
+    // If force and within limits, keep original dimensions but recompress
+    if ($force && $srcW <= $maxWidth && $srcH <= $maxHeight) {
+        $newW = $srcW;
+        $newH = $srcH;
+    } else {
+        $scale = min($maxWidth / $srcW, $maxHeight / $srcH);
+        $newW = (int) floor($srcW * $scale);
+        $newH = (int) floor($srcH * $scale);
+    }
     
     // Create resized image
     $dst = imagecreatetruecolor($newW, $newH);
@@ -527,8 +749,10 @@ function generate_thumbnail(string $sourcePath, string $thumbPath, int $maxWidth
     
     imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
     
-    // Save thumbnail
-    image_save_as($thumbPath, $dst);
+    // Save thumbnail with higher quality (95 for JPEG, 90 for WebP)
+    $ext = strtolower(pathinfo($thumbPath, PATHINFO_EXTENSION));
+    $quality = ($ext === 'webp') ? 90 : 95;
+    image_save_as($thumbPath, $dst, $quality);
     
     imagedestroy($src);
     imagedestroy($dst);

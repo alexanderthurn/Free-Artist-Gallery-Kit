@@ -28,6 +28,7 @@ $base = extract_base_name($image);
 // Find JSON file to get original_filename
 $jsonFile = find_json_file($base, $imagesDir);
 $originalFilename = $base;
+$meta = [];
 
 if ($jsonFile && is_file($imagesDir.$jsonFile)) {
     $jsonContent = file_get_contents($imagesDir.$jsonFile);
@@ -68,6 +69,13 @@ if (empty($deleted)) {
     http_response_code(500);
     echo json_encode(['ok' => false, 'error' => 'Failed to delete files']);
     exit;
+}
+
+// Update JSON file to set live status to false
+if ($jsonFile && is_file($imagesDir.$jsonFile) && !empty($meta)) {
+    $meta['live'] = false;
+    $updatedJsonContent = json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    file_put_contents($imagesDir.$jsonFile, $updatedJsonContent);
 }
 
 echo json_encode([

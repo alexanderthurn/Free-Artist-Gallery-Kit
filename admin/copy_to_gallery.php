@@ -43,6 +43,13 @@ if (!is_array($meta)) {
     exit;
 }
 
+// Set live status to true
+$meta['live'] = true;
+
+// Save updated metadata back to JSON file
+$updatedJsonContent = json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+file_put_contents($imagesDir.$jsonFile, $updatedJsonContent);
+
 // Use unified function to update gallery entry
 $result = update_gallery_entry($base, $meta, $imagesDir, $galleryDir);
 

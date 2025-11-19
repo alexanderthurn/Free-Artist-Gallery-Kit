@@ -114,6 +114,7 @@
         <a href="/index.html" class="primary">Hauptseite anzeigen</a>
         <a href="/imprint.html" class="primary">Impressum anzeigen</a>
         <button type="button" id="optimize-btn" class="primary" onclick="optimizeImages()">Bilder optimieren</button>
+        <button type="button" id="force-optimize-btn" class="primary" onclick="optimizeImages(true)" style="background: #d97706; border-color: #d97706;">Bilder neu generieren</button>
       </div>
       <div id="optimize-log" style="display: none; margin-bottom: 24px; padding: 16px; background: #f5f5f5; border-radius: 8px; border: 1px solid #ddd; max-height: 400px; overflow-y: auto;"></div>
       
@@ -1163,12 +1164,12 @@
       }, actualDuration);
     }
 
-    async function optimizeImages() {
-      const btn = document.getElementById('optimize-btn');
+    async function optimizeImages(force = false) {
+      const btn = force ? document.getElementById('force-optimize-btn') : document.getElementById('optimize-btn');
       const logDiv = document.getElementById('optimize-log');
       
       btn.disabled = true;
-      btn.textContent = 'Analysiere...';
+      btn.textContent = force ? 'Analysiere (Neu generieren)...' : 'Analysiere...';
       logDiv.style.display = 'block';
       logDiv.innerHTML = '<p style="color: #666; margin: 0;">Analysiere Bilder...</p>';
       
@@ -1177,6 +1178,9 @@
         const previewBody = new FormData();
         previewBody.set('action', 'both');
         previewBody.set('preview', '1');
+        if (force) {
+          previewBody.set('force', '1');
+        }
         
         const previewRes = await fetch('optimize_images.php', { method: 'POST', body: previewBody });
         if (!previewRes.ok) {
@@ -1200,12 +1204,16 @@
         // Display preview logs
         const data = previewData.data;
         let logHtml = '<div style="font-family: monospace; font-size: 13px; line-height: 1.6;">';
-        logHtml += '<h3 style="margin-top: 0; color: #333;">Vorschau der Optimierung</h3>';
+        logHtml += `<h3 style="margin-top: 0; color: #333;">Vorschau der Optimierung${force ? ' <span style="color: #d97706;">(Neu generieren)</span>' : ''}</h3>`;
         
         // Gallery optimization
         if (data.optimize && data.optimize.gallery) {
           const gallery = data.optimize.gallery;
           logHtml += '<div style="margin-bottom: 16px;"><strong style="color: #666;">Galerie-Bilder:</strong><br>';
+          
+          if (gallery.rebuild) {
+            logHtml += '<div style="margin-left: 16px; margin-top: 8px; padding: 8px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; color: #856404;"><strong>⚠️ Galerie wird komplett neu aufgebaut:</strong> Alle Dateien in img/gallery werden gelöscht und aus admin/images neu generiert.<br></div>';
+          }
           
           if (gallery.images && gallery.images.length > 0) {
             logHtml += '<div style="margin-left: 16px; margin-top: 8px;">';
@@ -1297,6 +1305,9 @@
         // Now execute the actual optimization
         const execBody = new FormData();
         execBody.set('action', 'both');
+        if (force) {
+          execBody.set('force', '1');
+        }
         
         // Fire and forget - don't wait for response
         fetch('optimize_images.php', { method: 'POST', body: execBody }).catch(() => {});
@@ -1306,13 +1317,13 @@
           const successHtml = logHtml + '<p style="color: #28a745; margin-top: 12px; margin-bottom: 0;">✓ Optimierung gestartet. Die Verarbeitung läuft im Hintergrund.</p>';
           logDiv.innerHTML = successHtml;
           btn.disabled = false;
-          btn.textContent = 'Bilder optimieren';
+          btn.textContent = force ? 'Bilder neu generieren' : 'Bilder optimieren';
         }, 500);
         
       } catch (error) {
         logDiv.innerHTML = `<p style="color: #dc3545; margin: 0;">Fehler: ${error.message}</p>`;
         btn.disabled = false;
-        btn.textContent = 'Bilder optimieren';
+        btn.textContent = force ? 'Bilder neu generieren' : 'Bilder optimieren';
       }
     }
   </script>

@@ -59,6 +59,11 @@ if (isset($existingMeta['manual_corners'])) {
     $data['manual_corners'] = $existingMeta['manual_corners'];
 }
 
+// Preserve live status if it exists
+if (isset($existingMeta['live'])) {
+    $data['live'] = $existingMeta['live'];
+}
+
 $ok = (bool)file_put_contents($metaPath, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 if (!$ok) {
     http_response_code(500);
@@ -66,14 +71,23 @@ if (!$ok) {
     exit;
 }
 
-// Check if this entry is in gallery and update it automatically
+// Check if this entry should be in gallery (live status from JSON or existing gallery entry)
 $galleryDir = dirname(__DIR__).'/img/gallery/';
 $originalFilename = $data['original_filename'];
 $galleryFilename = find_gallery_entry($originalFilename, $galleryDir);
 $inGallery = $galleryFilename !== null;
 
-// If in gallery, automatically update using unified function
-if ($inGallery) {
+// If live is true but not in gallery, copy it
+if (isset($data['live']) && $data['live'] === true && !$inGallery) {
+    $imagesDir = __DIR__.'/images/';
+    $result = update_gallery_entry($originalFilename, $data, $imagesDir, $galleryDir);
+    if ($result['ok']) {
+        $inGallery = true;
+        // Trigger async image optimization
+        async_http_post('admin/optimize_images.php', ['action' => 'both']);
+    }
+} else if ($inGallery) {
+    // If in gallery, automatically update using unified function
     $imagesDir = __DIR__.'/images/';
     update_gallery_entry($originalFilename, $data, $imagesDir, $galleryDir);
     

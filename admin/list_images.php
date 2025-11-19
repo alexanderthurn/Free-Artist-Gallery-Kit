@@ -112,10 +112,27 @@ foreach ($groups as $key => &$g) {
         $decoded = json_decode($raw ?: '', true);
         if (is_array($decoded)) $g['meta'] = $decoded;
     }
-    // Check if this entry exists in gallery
-    $g['in_gallery'] = isset($galleryEntries[$key]);
-    if ($g['in_gallery']) {
+    // Check live status from JSON metadata (primary source)
+    // Also check if this entry exists in gallery (for backward compatibility)
+    $g['in_gallery'] = false;
+    if (isset($g['meta']['live']) && $g['meta']['live'] === true) {
+        $g['in_gallery'] = true;
+        // If live but not in gallery, ensure it's copied
+        if (!isset($galleryEntries[$key])) {
+            // Entry should be in gallery but isn't - this is a sync issue
+            // The gallery will be synced when user interacts with the painting
+        } else {
+            $g['gallery_filename'] = $galleryEntries[$key];
+        }
+    } else if (isset($galleryEntries[$key])) {
+        // Backward compatibility: if in gallery but not marked live in JSON, mark as live
+        $g['in_gallery'] = true;
         $g['gallery_filename'] = $galleryEntries[$key];
+        // Update JSON to reflect live status
+        if (isset($g['meta']) && is_file($metaFile)) {
+            $g['meta']['live'] = true;
+            file_put_contents($metaFile, json_encode($g['meta'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        }
     }
 }
 unset($g);

@@ -112,27 +112,40 @@ function image_create_from_any(string $path) {
     };
 }
 
-function image_save_as(string $path, $im): void {
+function image_save_as(string $path, $im, ?int $quality = null): void {
     $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
     switch ($ext) {
         case 'jpg':
         case 'jpeg':
-            imagejpeg($im, $path, 90);
+            $jpegQuality = $quality ?? 90;
+            imagejpeg($im, $path, $jpegQuality);
             break;
         case 'png':
-            imagepng($im, $path, 6);
+            // PNG compression level: 0-9, where 0 is no compression and 9 is maximum
+            // Convert quality (0-100) to PNG compression (0-9)
+            // Higher quality = lower compression
+            if ($quality !== null) {
+                $pngCompression = (int) round(9 - ($quality / 100) * 9);
+                $pngCompression = max(0, min(9, $pngCompression));
+            } else {
+                $pngCompression = 6;
+            }
+            imagepng($im, $path, $pngCompression);
             break;
         case 'webp':
             if (!function_exists('imagewebp')) {
                 // Fallback to JPEG
                 $alt = preg_replace('/\.webp$/i', '.jpg', $path);
-                imagejpeg($im, $alt, 90);
+                $jpegQuality = $quality ?? 90;
+                imagejpeg($im, $alt, $jpegQuality);
             } else {
-                imagewebp($im, $path, 85);
+                $webpQuality = $quality ?? 85;
+                imagewebp($im, $path, $webpQuality);
             }
             break;
         default:
-            imagejpeg($im, $path, 90);
+            $jpegQuality = $quality ?? 90;
+            imagejpeg($im, $path, $jpegQuality);
     }
 }
 

@@ -515,6 +515,10 @@ PROMPT;
   }
   
   file_put_contents($targetPath, $imgBytes);
+  
+  // Generate thumbnail for the variant (full resolution in admin/images, just generate thumbnail)
+  $thumbPath = generate_thumbnail_path($targetPath);
+  generate_thumbnail($targetPath, $thumbPath, 512, 1024);
 
   // Check if this image is already in gallery and update it
   $galleryDir = dirname(__DIR__) . '/img/gallery/';
@@ -708,6 +712,11 @@ PROMPT;
       
       // Save regenerated variant
       file_put_contents($variant['target_path'], $imgBytes);
+      
+      // Generate thumbnail for the regenerated variant
+      $thumbPath = generate_thumbnail_path($variant['target_path']);
+      generate_thumbnail($variant['target_path'], $thumbPath, 512, 1024);
+      
       $regenerated++;
       
     } catch (Exception $e) {

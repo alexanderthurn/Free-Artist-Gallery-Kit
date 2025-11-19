@@ -152,6 +152,10 @@ if (!isset($meta['original_filename'])) {
 // Save updated metadata
 file_put_contents($metaPath, json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
+// Generate thumbnail for _final image
+$thumbPath = generate_thumbnail_path($finalPath);
+generate_thumbnail($finalPath, $thumbPath, 512, 1024);
+
 // Check if this entry is in gallery and update it automatically
 $galleryDir = dirname(__DIR__).'/img/gallery/';
 $originalFilename = $meta['original_filename'];

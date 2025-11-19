@@ -1,10 +1,31 @@
 <?php
 declare(strict_types=1);
 
+// Set error handler to catch all errors
+set_error_handler(function($severity, $message, $file, $line) {
+    if (!(error_reporting() & $severity)) {
+        return false;
+    }
+    throw new ErrorException($message, 0, $severity, $file, $line);
+});
+
 // Ensure no output before JSON
 ob_start();
 
-require_once __DIR__.'/utils.php';
+try {
+    require_once __DIR__.'/utils.php';
+} catch (Throwable $e) {
+    ob_clean();
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'ok' => false,
+        'error' => 'Failed to load utils: ' . $e->getMessage(),
+        'file' => basename($e->getFile()),
+        'line' => $e->getLine()
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
 // Configuration parameters
 $GALLERY_MAX_WIDTH = 1536;
@@ -17,57 +38,86 @@ $THUMBNAIL_MAX_HEIGHT = 1024;
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    if (ob_get_level() > 0) {
-        ob_clean();
-    }
-    echo json_encode(['ok' => false, 'error' => 'Method not allowed']);
-    exit;
-}
+// Allow both GET and POST requests (GET for testing, POST for production)
+// Merge parameters: POST takes precedence over GET
+$params = array_merge($_GET, $_POST);
 
 // Get action parameter
-$action = $_POST['action'] ?? 'both';
-$preview = isset($_POST['preview']) && $_POST['preview'] === '1';
-$force = isset($_POST['force']) && $_POST['force'] === '1';
+$action = $params['action'] ?? 'both';
+$preview = isset($params['preview']) && $params['preview'] === '1';
+$force = isset($params['force']) && $params['force'] === '1';
 
 // If preview mode, return what will be processed
 if ($preview) {
-    $previewData = preview_processing($action, $force);
-    if (ob_get_level() > 0) {
-        ob_clean(); // Ensure no extra output
+    try {
+        $previewData = preview_processing($action, $force);
+        if (ob_get_level() > 0) {
+            ob_clean(); // Ensure no extra output
+        }
+        $jsonOutput = json_encode([
+            'ok' => true,
+            'preview' => true,
+            'data' => $previewData
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        
+        if ($jsonOutput === false) {
+            throw new RuntimeException('JSON encoding failed: ' . json_last_error_msg());
+        }
+        
+        echo $jsonOutput;
+    } catch (Throwable $e) {
+        if (ob_get_level() > 0) {
+            ob_clean();
+        }
+        // Log full error details
+        error_log('Preview error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine() . PHP_EOL . $e->getTraceAsString());
+        
+        http_response_code(500);
+        $errorJson = json_encode([
+            'ok' => false,
+            'error' => 'Preview failed: ' . $e->getMessage(),
+            'file' => basename($e->getFile()),
+            'line' => $e->getLine()
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        
+        if ($errorJson === false) {
+            // Fallback if JSON encoding fails
+            echo '{"ok":false,"error":"Preview failed: ' . addslashes($e->getMessage()) . '"}';
+        } else {
+            echo $errorJson;
+        }
     }
-    echo json_encode([
-        'ok' => true,
-        'preview' => true,
-        'data' => $previewData
-    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 // Return immediately and process in background
-if (ob_get_level() > 0) {
-    ob_clean(); // Ensure no extra output
-}
-echo json_encode(['ok' => true, 'message' => 'Processing started in background'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-// Flush output to client
-if (function_exists('fastcgi_finish_request')) {
-    fastcgi_finish_request();
-} else {
-    // Fallback: close connection and continue processing
-    if (ob_get_level()) {
-        ob_end_flush();
+try {
+    if (ob_get_level() > 0) {
+        ob_clean(); // Ensure no extra output
     }
-    flush();
-    if (function_exists('apache_setenv')) {
-        @apache_setenv('no-gzip', 1);
-    }
-    @ini_set('zlib.output_compression', 0);
-}
+    echo json_encode(['ok' => true, 'message' => 'Processing started in background'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-// Start background processing
-process_images($action, $force);
+    // Flush output to client
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    } else {
+        // Fallback: close connection and continue processing
+        if (ob_get_level()) {
+            ob_end_flush();
+        }
+        flush();
+        if (function_exists('apache_setenv')) {
+            @apache_setenv('no-gzip', 1);
+        }
+        @ini_set('zlib.output_compression', 0);
+    }
+
+    // Start background processing
+    process_images($action, $force);
+} catch (Throwable $e) {
+    // Log error but don't send to client (connection already closed)
+    error_log('optimize_images.php error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+}
 
 /**
  * Preview what will be processed (without actually processing)
@@ -88,72 +138,133 @@ function preview_processing(string $action, bool $force = false): array {
         // If force, gallery will be rebuilt
         if ($force) {
             $result['optimize']['gallery']['rebuild'] = true;
-            // Preview will show what will be rebuilt - we need to check admin/images
+            // Preview will show what will be rebuilt - use same logic as rebuild_gallery()
             $imagesDir = __DIR__.'/images/';
             if (is_dir($imagesDir)) {
                 $adminFiles = scandir($imagesDir) ?: [];
                 $galleryPreview = ['images' => [], 'thumbnails' => []];
                 $processedBases = [];
                 
+                // Collect which paintings are live (same as rebuild_gallery)
+                $livePaintings = [];
+                $livePaintingsByJson = []; // Map JSON filename to base name for matching
                 foreach ($adminFiles as $file) {
                     if ($file === '.' || $file === '..') continue;
                     if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
                     
+                    $jsonPath = $imagesDir.$file;
+                    $jsonContent = @file_get_contents($jsonPath);
+                    if ($jsonContent === false) continue;
+                    
+                    $meta = @json_decode($jsonContent, true);
+                    if (!is_array($meta) || !isset($meta['live']) || $meta['live'] !== true) {
+                        continue; // Skip non-live paintings
+                    }
+                    
+                    // Extract base name from JSON filename (remove _original, _color, _final suffixes)
                     $jsonStem = pathinfo($file, PATHINFO_FILENAME);
-                    // Remove _original, _color, _final suffixes to get the true base name
-                    $base = preg_replace('/_(original|color|final)$/', '', $jsonStem);
+                    $jsonBase = preg_replace('/_(original|color|final)$/', '', $jsonStem);
                     
-                    if (in_array($base, $processedBases, true)) continue;
+                    // Use original_filename if set, otherwise use JSON base name
+                    $originalFilename = isset($meta['original_filename']) ? $meta['original_filename'] : $jsonBase;
                     
-                    // Check if there's a _final image
-                    $hasFinal = false;
-                    foreach ($adminFiles as $imgFile) {
-                        if ($imgFile === '.' || $imgFile === '..') continue;
-                        $imgStem = pathinfo($imgFile, PATHINFO_FILENAME);
-                        if (strpos($imgStem, $base.'_final') === 0) {
-                            $hasFinal = true;
-                            // Preview this image
-                            $filePath = $imagesDir.$imgFile;
-                            $imageInfo = @getimagesize($filePath);
-                            if ($imageInfo !== false) {
-                                $currentWidth = $imageInfo[0];
-                                $currentHeight = $imageInfo[1];
+                    $livePaintings[$originalFilename] = true;
+                    $livePaintingsByJson[$jsonBase] = $originalFilename; // Map for lookup
+                }
+                
+                // Find all _final images (same as rebuild_gallery)
+                $finalImages = [];
+                foreach ($adminFiles as $file) {
+                    if ($file === '.' || $file === '..') continue;
+                    if (is_dir($imagesDir.$file)) continue;
+                    
+                    $fileStem = pathinfo($file, PATHINFO_FILENAME);
+                    // Check if this is a _final image (ends with _final)
+                    if (substr($fileStem, -6) === '_final') {
+                        $finalImages[] = $file;
+                    }
+                }
+                
+                // Process each _final image (same as rebuild_gallery)
+                foreach ($finalImages as $finalImage) {
+                    // Extract base name using the same function as rebuild_gallery
+                    $base = extract_base_name($finalImage);
+                    
+                    // Find JSON file to check live status
+                    $jsonFile = find_json_file($base, $imagesDir);
+                    $isLive = false;
+                    
+                    if ($jsonFile && is_file($imagesDir.$jsonFile)) {
+                        $jsonContent = @file_get_contents($imagesDir.$jsonFile);
+                        if ($jsonContent !== false) {
+                            $meta = @json_decode($jsonContent, true);
+                            if (is_array($meta)) {
+                                // Check multiple ways to determine if live
+                                $jsonStem = pathinfo($jsonFile, PATHINFO_FILENAME);
+                                $jsonBase = preg_replace('/_(original|color|final)$/', '', $jsonStem);
                                 
-                                // Calculate new size (will be resized to max dimensions)
-                                $needsResize = $currentWidth > $GALLERY_MAX_WIDTH || $currentHeight > $GALLERY_MAX_HEIGHT;
-                                $newWidth = $currentWidth;
-                                $newHeight = $currentHeight;
-                                if ($needsResize) {
-                                    $scale = min($GALLERY_MAX_WIDTH / $currentWidth, $GALLERY_MAX_HEIGHT / $currentHeight);
-                                    $newWidth = (int) floor($currentWidth * $scale);
-                                    $newHeight = (int) floor($currentHeight * $scale);
+                                if (isset($livePaintings[$base])) {
+                                    $isLive = true;
+                                } elseif (isset($livePaintingsByJson[$jsonBase])) {
+                                    $isLive = true;
+                                } elseif (isset($meta['live']) && $meta['live'] === true) {
+                                    $isLive = true;
                                 }
-                                
-                                $galleryPreview['images'][] = [
-                                    'file' => $imgFile,
-                                    'current_size' => $currentWidth . 'x' . $currentHeight,
-                                    'needs_resize' => $needsResize || $force, // Force will recompress even if within limits
-                                    'new_size' => ($needsResize || $force) ? ($newWidth . 'x' . $newHeight) : null
-                                ];
-                                
-                                // Preview thumbnail
-                                $thumbScale = min($THUMBNAIL_MAX_WIDTH / $currentWidth, $THUMBNAIL_MAX_HEIGHT / $currentHeight);
-                                $thumbWidth = (int) floor($currentWidth * $thumbScale);
-                                $thumbHeight = (int) floor($currentHeight * $thumbScale);
-                                $galleryPreview['thumbnails'][] = [
-                                    'file' => pathinfo($imgFile, PATHINFO_FILENAME) . '_thumb.' . pathinfo($imgFile, PATHINFO_EXTENSION),
-                                    'source' => $imgFile,
-                                    'size' => $thumbWidth . 'x' . $thumbHeight,
-                                    'exists' => false,
-                                    'action' => 'create',
-                                    'needs_update' => true
-                                ];
                             }
-                            break;
                         }
                     }
                     
-                    if ($hasFinal) {
+                    // Only include if this painting is live
+                    if (!$isLive) {
+                        continue; // Skip paintings that aren't live
+                    }
+                    
+                    // Skip if we already processed this base
+                    if (in_array($base, $processedBases, true)) continue;
+                    
+                    // Preview this image
+                    $filePath = $imagesDir.$finalImage;
+                    $imageInfo = @getimagesize($filePath);
+                    if ($imageInfo !== false && isset($imageInfo[0]) && isset($imageInfo[1])) {
+                        $currentWidth = $imageInfo[0];
+                        $currentHeight = $imageInfo[1];
+                        
+                        // Skip if image has invalid dimensions
+                        if ($currentWidth <= 0 || $currentHeight <= 0) continue;
+                        
+                        // Calculate new size (will be resized to max dimensions)
+                        $needsResize = $currentWidth > $GALLERY_MAX_WIDTH || $currentHeight > $GALLERY_MAX_HEIGHT;
+                        $newWidth = $currentWidth;
+                        $newHeight = $currentHeight;
+                        if ($needsResize) {
+                            $scale = min($GALLERY_MAX_WIDTH / $currentWidth, $GALLERY_MAX_HEIGHT / $currentHeight);
+                            $newWidth = (int) floor($currentWidth * $scale);
+                            $newHeight = (int) floor($currentHeight * $scale);
+                        }
+                        
+                        $galleryPreview['images'][] = [
+                            'file' => $finalImage,
+                            'current_size' => $currentWidth . 'x' . $currentHeight,
+                            'needs_resize' => $needsResize || $force, // Force will recompress even if within limits
+                            'new_size' => ($needsResize || $force) ? ($newWidth . 'x' . $newHeight) : null
+                        ];
+                        
+                        // Preview thumbnail
+                        $thumbScale = min($THUMBNAIL_MAX_WIDTH / $currentWidth, $THUMBNAIL_MAX_HEIGHT / $currentHeight);
+                        $thumbWidth = (int) floor($currentWidth * $thumbScale);
+                        $thumbHeight = (int) floor($currentHeight * $thumbScale);
+                        $imgFileInfo = pathinfo($finalImage);
+                        $imgFilename = $imgFileInfo['filename'] ?? pathinfo($finalImage, PATHINFO_FILENAME);
+                        $imgExtension = $imgFileInfo['extension'] ?? pathinfo($finalImage, PATHINFO_EXTENSION);
+                        $galleryPreview['thumbnails'][] = [
+                            'file' => $imgFilename . '_thumb.' . $imgExtension,
+                            'source' => $finalImage,
+                            'size' => $thumbWidth . 'x' . $thumbHeight,
+                            'exists' => false,
+                            'action' => 'create',
+                            'needs_update' => true
+                        ];
+                        
                         $processedBases[] = $base;
                     }
                 }
@@ -164,21 +275,37 @@ function preview_processing(string $action, bool $force = false): array {
             // Preview gallery images normally
             $galleryDir = dirname(__DIR__).'/img/gallery/';
             if (is_dir($galleryDir)) {
-                $galleryPreview = preview_directory($galleryDir, $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
-                $result['optimize']['gallery'] = array_merge($result['optimize']['gallery'], $galleryPreview);
+                try {
+                    $galleryPreview = preview_directory($galleryDir, $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
+                    $result['optimize']['gallery'] = array_merge($result['optimize']['gallery'], $galleryPreview);
+                } catch (Throwable $e) {
+                    // If preview fails, return empty arrays but don't crash
+                    error_log('preview_directory error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+                }
             }
         }
         
         // Preview upload images
         $uploadDir = dirname(__DIR__).'/img/upload/';
         if (is_dir($uploadDir)) {
-            $uploadPreview = preview_directory($uploadDir, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
-            $result['optimize']['upload'] = $uploadPreview;
+            try {
+                $uploadPreview = preview_directory($uploadDir, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
+                $result['optimize']['upload'] = $uploadPreview;
+            } catch (Throwable $e) {
+                // If preview fails, return empty arrays but don't crash
+                error_log('preview_directory error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            }
         }
     }
     
     if ($action === 'cleanup' || $action === 'both') {
-        $result['cleanup'] = preview_cleanup();
+        try {
+            $result['cleanup'] = preview_cleanup();
+        } catch (Throwable $e) {
+            // If cleanup preview fails, return empty cleanup data but don't crash
+            error_log('preview_cleanup error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            $result['cleanup'] = ['files_to_delete' => []];
+        }
     }
     
     return $result;
@@ -188,29 +315,45 @@ function preview_processing(string $action, bool $force = false): array {
  * Preview directory processing
  */
 function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thumbMaxWidth, int $thumbMaxHeight, bool $force = false): array {
-    $files = scandir($dir) ?: [];
     $images = [];
     $thumbnails = [];
     
+    // Ensure directory exists and is readable
+    if (!is_dir($dir) || !is_readable($dir)) {
+        return ['images' => $images, 'thumbnails' => $thumbnails];
+    }
+    
+    $files = @scandir($dir);
+    if ($files === false) {
+        return ['images' => $images, 'thumbnails' => $thumbnails];
+    }
+    
     foreach ($files as $file) {
-        if ($file === '.' || $file === '..') continue;
-        
-        $filePath = $dir.$file;
-        
-        // Skip directories, JSON files, and existing thumbnails
-        if (is_dir($filePath)) continue;
-        if (pathinfo($file, PATHINFO_EXTENSION) === 'json') continue;
-        if (strpos($file, '_thumb.') !== false) continue;
-        
-        $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-        if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) continue;
-        
-        // Get image dimensions
-        $imageInfo = @getimagesize($filePath);
-        if ($imageInfo === false) continue;
+        try {
+            if ($file === '.' || $file === '..') continue;
+            
+            $filePath = $dir.$file;
+            
+            // Skip directories, JSON files, and existing thumbnails
+            if (is_dir($filePath)) continue;
+            
+            $fileInfo = pathinfo($file);
+            $ext = isset($fileInfo['extension']) ? strtolower($fileInfo['extension']) : '';
+            
+            if ($ext === 'json') continue;
+            if (strpos($file, '_thumb.') !== false) continue;
+            if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) continue;
+            
+            // Get image dimensions
+            $imageInfo = @getimagesize($filePath);
+            if ($imageInfo === false || !isset($imageInfo[0]) || !isset($imageInfo[1])) continue;
         
         $currentWidth = $imageInfo[0];
         $currentHeight = $imageInfo[1];
+        
+        // Skip if image has invalid dimensions
+        if ($currentWidth <= 0 || $currentHeight <= 0) continue;
+        
         $needsResize = $currentWidth > $maxWidth || $currentHeight > $maxHeight;
         
         // Calculate new dimensions if resize needed
@@ -227,7 +370,14 @@ function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
         $thumbWidth = (int) floor($currentWidth * $thumbScale);
         $thumbHeight = (int) floor($currentHeight * $thumbScale);
         
-        $thumbPath = generate_thumbnail_path($filePath);
+        try {
+            $thumbPath = generate_thumbnail_path($filePath);
+            if (empty($thumbPath)) {
+                continue; // Skip if thumbnail path generation failed
+            }
+        } catch (Throwable $e) {
+            continue; // Skip this file if thumbnail path generation fails
+        }
         $thumbExists = is_file($thumbPath);
         
         // Check if thumbnail needs to be updated
@@ -243,7 +393,7 @@ function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
         } else if ($thumbExists) {
             // Check thumbnail dimensions
             $thumbInfo = @getimagesize($thumbPath);
-            if ($thumbInfo !== false) {
+            if ($thumbInfo !== false && isset($thumbInfo[0]) && isset($thumbInfo[1])) {
                 $thumbCurrentWidth = $thumbInfo[0];
                 $thumbCurrentHeight = $thumbInfo[1];
                 
@@ -252,16 +402,29 @@ function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
                 $heightMatch = abs($thumbCurrentHeight - $thumbHeight) <= 1;
                 
                 // Check if source image is newer than thumbnail
-                $sourceMtime = filemtime($filePath);
-                $thumbMtime = filemtime($thumbPath);
-                $sourceIsNewer = $sourceMtime > $thumbMtime;
-                
-                // Needs update if dimensions don't match OR source is newer
-                if (!$widthMatch || !$heightMatch || $sourceIsNewer) {
+                // Verify files still exist before getting mtime
+                if (!is_file($filePath) || !is_file($thumbPath)) {
+                    // Files were deleted, skip this thumbnail check
                     $needsThumbUpdate = true;
                     $thumbAction = 'regenerate';
                 } else {
-                    $thumbAction = 'skip'; // Thumbnail is up to date
+                    $sourceMtime = @filemtime($filePath);
+                    $thumbMtime = @filemtime($thumbPath);
+                    if ($sourceMtime === false || $thumbMtime === false) {
+                        // If we can't get file times, assume update needed
+                        $needsThumbUpdate = true;
+                        $thumbAction = 'regenerate';
+                    } else {
+                        $sourceIsNewer = $sourceMtime > $thumbMtime;
+                        
+                        // Needs update if dimensions don't match OR source is newer
+                        if (!$widthMatch || !$heightMatch || $sourceIsNewer) {
+                            $needsThumbUpdate = true;
+                            $thumbAction = 'regenerate';
+                        } else {
+                            $thumbAction = 'skip'; // Thumbnail is up to date
+                        }
+                    }
                 }
             } else {
                 // Thumbnail file exists but can't read dimensions - regenerate
@@ -270,21 +433,26 @@ function preview_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
             }
         }
         
-        $images[] = [
-            'file' => $file,
-            'current_size' => $currentWidth . 'x' . $currentHeight,
-            'needs_resize' => $needsResize,
-            'new_size' => $needsResize ? ($newWidth . 'x' . $newHeight) : null
-        ];
-        
-        $thumbnails[] = [
-            'file' => basename($thumbPath),
-            'source' => $file,
-            'size' => $thumbWidth . 'x' . $thumbHeight,
-            'exists' => $thumbExists,
-            'action' => $thumbAction,
-            'needs_update' => $needsThumbUpdate
-        ];
+            $images[] = [
+                'file' => $file,
+                'current_size' => $currentWidth . 'x' . $currentHeight,
+                'needs_resize' => $needsResize,
+                'new_size' => $needsResize ? ($newWidth . 'x' . $newHeight) : null
+            ];
+            
+            $thumbnails[] = [
+                'file' => basename($thumbPath),
+                'source' => $file,
+                'size' => $thumbWidth . 'x' . $thumbHeight,
+                'exists' => $thumbExists,
+                'action' => $thumbAction,
+                'needs_update' => $needsThumbUpdate
+            ];
+        } catch (Throwable $e) {
+            // Skip this file if any error occurs and continue with next file
+            error_log('preview_directory file error: ' . $e->getMessage() . ' for file: ' . ($file ?? 'unknown'));
+            continue;
+        }
     }
     
     return ['images' => $images, 'thumbnails' => $thumbnails];
@@ -312,14 +480,17 @@ function preview_cleanup(): array {
         if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
         
         $jsonPath = $galleryDir.$file;
-        $jsonContent = file_get_contents($jsonPath);
-        $meta = json_decode($jsonContent, true);
+        if (!is_file($jsonPath)) continue; // Skip if file doesn't exist
         
-        if (is_array($meta) && isset($meta['original_filename'])) {
-            $originalFilename = $meta['original_filename'];
-            $base = pathinfo($file, PATHINFO_FILENAME);
-            $livePaintings[$base] = $originalFilename;
-        }
+        $jsonContent = @file_get_contents($jsonPath);
+        if ($jsonContent === false) continue; // Skip if read failed
+        
+        $meta = @json_decode($jsonContent, true);
+        if (!is_array($meta) || !isset($meta['original_filename'])) continue; // Skip if invalid JSON or missing field
+        
+        $originalFilename = $meta['original_filename'];
+        $base = pathinfo($file, PATHINFO_FILENAME);
+        $livePaintings[$base] = $originalFilename;
     }
     
     // Second pass: check each live painting and mark for deletion if orphaned
@@ -448,6 +619,7 @@ function rebuild_gallery(): void {
     // Collect which paintings are live by reading JSON files in admin/images
     // This is the source of truth for live status
     $livePaintings = [];
+    $livePaintingsByJson = []; // Map JSON filename to base name for matching
     $adminFiles = scandir($imagesDir) ?: [];
     foreach ($adminFiles as $file) {
         if ($file === '.' || $file === '..') continue;
@@ -458,9 +630,19 @@ function rebuild_gallery(): void {
         if ($jsonContent === false) continue;
         
         $meta = json_decode($jsonContent, true);
-        if (is_array($meta) && isset($meta['live']) && $meta['live'] === true && isset($meta['original_filename'])) {
-            $livePaintings[$meta['original_filename']] = true;
+        if (!is_array($meta) || !isset($meta['live']) || $meta['live'] !== true) {
+            continue; // Skip non-live paintings
         }
+        
+        // Extract base name from JSON filename (remove _original, _color, _final suffixes)
+        $jsonStem = pathinfo($file, PATHINFO_FILENAME);
+        $jsonBase = preg_replace('/_(original|color|final)$/', '', $jsonStem);
+        
+        // Use original_filename if set, otherwise use JSON base name
+        $originalFilename = isset($meta['original_filename']) ? $meta['original_filename'] : $jsonBase;
+        
+        $livePaintings[$originalFilename] = true;
+        $livePaintingsByJson[$jsonBase] = $originalFilename; // Map for lookup
     }
     
     // Delete ALL content in gallery directory (files and subdirectories)
@@ -525,14 +707,6 @@ function rebuild_gallery(): void {
         // Extract base name using the same function as copy_to_gallery.php
         $base = extract_base_name($finalImage);
         
-        // Only rebuild if this painting was live before deletion
-        if (!isset($livePaintings[$base])) {
-            continue; // Skip paintings that weren't live
-        }
-        
-        // Skip if we already processed this base
-        if (in_array($base, $processedBases, true)) continue;
-        
         // Find JSON file using the same function as copy_to_gallery.php
         $jsonFile = find_json_file($base, $imagesDir);
         
@@ -544,10 +718,34 @@ function rebuild_gallery(): void {
         $jsonContent = @file_get_contents($imagesDir.$jsonFile);
         if ($jsonContent === false) continue;
         
-        $meta = json_decode($jsonContent, true);
+        $meta = @json_decode($jsonContent, true);
         if (!is_array($meta) || !isset($meta['title'])) {
             continue;
         }
+        
+        // Check if this painting is live
+        // First check by base name, then by JSON base name
+        $jsonStem = pathinfo($jsonFile, PATHINFO_FILENAME);
+        $jsonBase = preg_replace('/_(original|color|final)$/', '', $jsonStem);
+        
+        $isLive = false;
+        if (isset($livePaintings[$base])) {
+            $isLive = true;
+        } elseif (isset($livePaintingsByJson[$jsonBase])) {
+            $isLive = true;
+            // Update base to match original_filename if it exists
+            $base = $livePaintingsByJson[$jsonBase];
+        } elseif (isset($meta['live']) && $meta['live'] === true) {
+            // If JSON says live but not in our map, include it anyway
+            $isLive = true;
+        }
+        
+        if (!$isLive) {
+            continue; // Skip paintings that aren't live
+        }
+        
+        // Skip if we already processed this base
+        if (in_array($base, $processedBases, true)) continue;
         
         // Rebuild this gallery entry (same as copy_to_gallery.php)
         $result = update_gallery_entry($base, $meta, $imagesDir, $galleryDir);
@@ -650,13 +848,18 @@ function process_admin_images_thumbnails(string $dir, int $thumbMaxWidth, int $t
                     $heightMatch = abs($thumbH - $expectedThumbH) <= 1;
                     
                     // Check if source is newer than thumbnail
-                    $sourceMtime = filemtime($filePath);
-                    $thumbMtime = filemtime($thumbPath);
-                    $sourceIsNewer = $sourceMtime > $thumbMtime;
-                    
-                    // Only regenerate if dimensions don't match OR source is newer
-                    if ($widthMatch && $heightMatch && !$sourceIsNewer) {
-                        $needsThumbnail = false; // Thumbnail is up to date
+                    $sourceMtime = @filemtime($filePath);
+                    $thumbMtime = @filemtime($thumbPath);
+                    if ($sourceMtime === false || $thumbMtime === false) {
+                        // If we can't get file times, regenerate thumbnail
+                        $needsThumbnail = true;
+                    } else {
+                        $sourceIsNewer = $sourceMtime > $thumbMtime;
+                        
+                        // Only regenerate if dimensions don't match OR source is newer
+                        if ($widthMatch && $heightMatch && !$sourceIsNewer) {
+                            $needsThumbnail = false; // Thumbnail is up to date
+                        }
                     }
                 }
             }
@@ -718,13 +921,18 @@ function process_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
                     $heightMatch = abs($thumbH - $expectedThumbH) <= 1;
                     
                     // Check if source is newer than thumbnail
-                    $sourceMtime = filemtime($filePath);
-                    $thumbMtime = filemtime($thumbPath);
-                    $sourceIsNewer = $sourceMtime > $thumbMtime;
-                    
-                    // Only regenerate if dimensions don't match OR source is newer
-                    if ($widthMatch && $heightMatch && !$sourceIsNewer) {
-                        $needsThumbnail = false; // Thumbnail is up to date
+                    $sourceMtime = @filemtime($filePath);
+                    $thumbMtime = @filemtime($thumbPath);
+                    if ($sourceMtime === false || $thumbMtime === false) {
+                        // If we can't get file times, regenerate thumbnail
+                        $needsThumbnail = true;
+                    } else {
+                        $sourceIsNewer = $sourceMtime > $thumbMtime;
+                        
+                        // Only regenerate if dimensions don't match OR source is newer
+                        if ($widthMatch && $heightMatch && !$sourceIsNewer) {
+                            $needsThumbnail = false; // Thumbnail is up to date
+                        }
                     }
                 }
             }
@@ -754,14 +962,17 @@ function cleanup_orphaned_files(): void {
         if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
         
         $jsonPath = $galleryDir.$file;
-        $jsonContent = file_get_contents($jsonPath);
-        $meta = json_decode($jsonContent, true);
+        if (!is_file($jsonPath)) continue; // Skip if file doesn't exist
         
-        if (is_array($meta) && isset($meta['original_filename'])) {
-            $originalFilename = $meta['original_filename'];
-            $base = pathinfo($file, PATHINFO_FILENAME);
-            $livePaintings[$base] = $originalFilename;
-        }
+        $jsonContent = @file_get_contents($jsonPath);
+        if ($jsonContent === false) continue; // Skip if read failed
+        
+        $meta = @json_decode($jsonContent, true);
+        if (!is_array($meta) || !isset($meta['original_filename'])) continue; // Skip if invalid JSON or missing field
+        
+        $originalFilename = $meta['original_filename'];
+        $base = pathinfo($file, PATHINFO_FILENAME);
+        $livePaintings[$base] = $originalFilename;
     }
     
     // Second pass: check each live painting and delete if orphaned

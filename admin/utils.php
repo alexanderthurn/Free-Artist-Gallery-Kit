@@ -801,29 +801,46 @@ function async_http_post(string $url, array $data = []): void {
         $url = $baseUrl . '/' . ltrim($url, '/');
     }
     
-    // Use exec to spawn background curl process (non-blocking)
-    $cmd = sprintf(
-        'curl -X POST -d %s %s > /dev/null 2>&1 &',
-        escapeshellarg($postData),
-        escapeshellarg($url)
-    );
-    
-    // Execute in background (works on Unix-like systems)
-    if (function_exists('exec')) {
-        @exec($cmd);
-    } else {
-        // Fallback: use file_get_contents with very short timeout
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => 'Content-Type: application/x-www-form-urlencoded',
-                'content' => $postData,
-                'timeout' => 0.1, // Very short timeout
-                'ignore_errors' => true
-            ]
+    // Try PHP curl extension first (most reliable)
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $postData,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 1, // Very short timeout for async behavior
+            CURLOPT_CONNECTTIMEOUT => 1,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+            CURLOPT_NOSIGNAL => 1, // Allow timeout to work properly
         ]);
-        @file_get_contents($url, false, $context);
+        // Execute without waiting for response (fire and forget)
+        curl_exec($ch);
+        curl_close($ch);
+        return;
     }
+    
+    // Fallback: Use exec to spawn background curl process (non-blocking)
+    if (function_exists('exec')) {
+        $cmd = sprintf(
+            'curl -X POST -d %s %s > /dev/null 2>&1 &',
+            escapeshellarg($postData),
+            escapeshellarg($url)
+        );
+        @exec($cmd);
+        return;
+    }
+    
+    // Last resort: use file_get_contents with very short timeout
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => 'Content-Type: application/x-www-form-urlencoded',
+            'content' => $postData,
+            'timeout' => 1, // Increased timeout slightly for reliability
+            'ignore_errors' => true
+        ]
+    ]);
+    @file_get_contents($url, false, $context);
 }
 
 

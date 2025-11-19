@@ -181,6 +181,10 @@ try {
     error_log("Failed to regenerate variants for {$base}: " . $e->getMessage());
 }
 
+// Always trigger optimization to ensure gallery is updated with all variants and thumbnails
+// This will rebuild the gallery for all live paintings, including this one if it's live
+async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
+
 echo json_encode(['ok' => true, 'in_gallery' => $inGallery]);
 exit;
 

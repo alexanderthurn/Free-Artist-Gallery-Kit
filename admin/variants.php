@@ -536,8 +536,8 @@ PROMPT;
       if (is_array($meta)) {
         update_gallery_entry($imageBaseName, $meta, $imagesDir, $galleryDir);
         
-        // Trigger async image optimization
-        async_http_post('admin/optimize_images.php', ['action' => 'both']);
+        // Trigger async image optimization with force to ensure thumbnails are regenerated
+        async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
       }
     }
   }
@@ -739,8 +739,8 @@ PROMPT;
       if (is_array($meta)) {
         update_gallery_entry($imageBaseName, $meta, $imagesDir, $galleryDir);
         
-        // Trigger async image optimization
-        async_http_post('admin/optimize_images.php', ['action' => 'both']);
+        // Trigger async image optimization with force to ensure thumbnails are regenerated
+        async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
       }
     }
   }

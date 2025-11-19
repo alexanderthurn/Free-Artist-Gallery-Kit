@@ -96,6 +96,9 @@ try {
             error_log("Failed to regenerate variants for {$base}: " . $e->getMessage());
         }
         
+        // Trigger optimization to copy everything to gallery with thumbnails
+        async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
+        
         echo json_encode(['ok' => true]);
         exit;
     } elseif ($action === 'room') {

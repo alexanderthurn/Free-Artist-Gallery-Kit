@@ -496,6 +496,10 @@ function update_gallery_entry(string $base, array $meta, string $imagesDir, stri
     // Resize to gallery max dimensions (1536x1536)
     resize_image_max($destImage, 1536, 1536, false);
     
+    // Generate thumbnail for main image
+    $thumbPath = generate_thumbnail_path($destImage);
+    generate_thumbnail($destImage, $thumbPath, 512, 1024);
+    
     // Add original_filename to metadata
     $meta['original_filename'] = $base;
     
@@ -520,6 +524,11 @@ function update_gallery_entry(string $base, array $meta, string $imagesDir, stri
         if (copy($imagesDir.$variantFile, $destVariant)) {
             // Resize variant to gallery max dimensions (1536x1536)
             resize_image_max($destVariant, 1536, 1536, false);
+            
+            // Generate thumbnail for variant
+            $variantThumbPath = generate_thumbnail_path($destVariant);
+            generate_thumbnail($destVariant, $variantThumbPath, 512, 1024);
+            
             $copiedVariants[] = basename($destVariant);
         }
     }

@@ -68,6 +68,9 @@ if ($inGallery) {
             update_gallery_entry($base, $meta, $imagesDir, $galleryDir);
         }
     }
+    
+    // Trigger optimization to ensure gallery is updated
+    async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
 }
 
 echo json_encode(['ok' => true, 'filename' => $filename, 'gallery_updated' => $inGallery]);

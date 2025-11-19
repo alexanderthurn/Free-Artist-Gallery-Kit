@@ -311,6 +311,9 @@ try {
     error_log("Failed to regenerate variants for {$name}: " . $e->getMessage());
 }
 
+// Trigger optimization to copy everything to gallery with thumbnails
+async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
+
 // Return relative paths from admin directory
 $colorPathRel = 'images/' . basename($colorPath);
 $finalPathRel = 'images/' . basename($finalPath);

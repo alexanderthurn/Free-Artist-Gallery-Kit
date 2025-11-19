@@ -310,6 +310,16 @@
       }
     }
 
+    /**
+     * Convert image URL to thumbnail URL by inserting _thumb before extension
+     * Example: images/painting_final.jpg -> images/painting_final_thumb.jpg
+     */
+    function getThumbnailUrl(imageUrl) {
+      if (!imageUrl) return imageUrl;
+      // Match the last dot before the extension
+      return imageUrl.replace(/\.(jpg|jpeg|png|gif|webp)$/i, '_thumb.$1');
+    }
+
     function renderImageRow(g) {
       const row = document.createElement('div');
       row.className = g.in_gallery ? 'rowItem live' : 'rowItem';
@@ -356,7 +366,7 @@
             ${g.in_gallery ? `<div class="live-badge clickable" onclick="event.stopPropagation(); event.preventDefault(); ${badgeClickHandler}" title="Zurück auf Entwurf">Live</div>` : `<div class="draft-badge clickable" onclick="event.stopPropagation(); event.preventDefault(); ${badgeClickHandler}" title="Live schalten">Entwurf</div>`}
             <div class="admin-frame-preview frame-${frameType}" id="frame-preview-${g.base}">
               ${finalVariant ? `
-                <img class="${imageClass}" id="main-img-${g.base}" loading="lazy" src="${finalVariant.url}${cacheBuster}" alt="${finalVariant.name}" ${imageClickHandler} data-variant="final">
+                <img class="${imageClass}" id="main-img-${g.base}" loading="lazy" src="${getThumbnailUrl(finalVariant.url)}${cacheBuster}" alt="${finalVariant.name}" ${imageClickHandler} data-variant="final">
               ` : '<div class="main-image" style="aspect-ratio: 1/1; display: flex; align-items: center; justify-content: center; color: #999;">Kein Final-Bild</div>'}
             </div>
             ${finalVariant ? `
@@ -369,11 +379,14 @@
           </div>
           ${allVariants.length > 0 ? `
             <div class="variant-thumbs" id="thumbs-${g.base}">
-              ${allVariants.map((v) => `
+              ${allVariants.map((v) => {
+                // Generate thumbnail URL implicitly from image URL
+                const thumbUrl = getThumbnailUrl(v.url);
+                return `
                 <div class="variant-thumb-wrapper">
                   <img class="variant-thumb ${v.variant === 'final' ? 'active' : ''}" 
                        loading="lazy" 
-                       src="${v.url}${cacheBuster}" 
+                       src="${thumbUrl}${cacheBuster}" 
                        alt="${v.name}"
                        data-variant="${v.variant || ''}"
                        onclick="selectVariantByValue('${escapeHtml(g.base)}', '${v.variant || ''}', '${v.url}')"
@@ -384,7 +397,8 @@
                             title="Löschen">×</button>
                   ` : ''}
                 </div>
-              `).join('')}
+              `;
+              }).join('')}
               <div class="add-variant-btn" onclick="toggleVariants('${escapeHtml(g.base)}')" title="KI Variante hinzufügen">+</div>
             </div>
           ` : `
@@ -562,8 +576,9 @@
       
       if (!mainImg || !thumbs) return;
       
-      // Update main image
-      mainImg.src = variantUrl.split('?')[0] + '?t=' + Date.now();
+      // Update main image (use thumbnail version)
+      const thumbUrl = getThumbnailUrl(variantUrl.split('?')[0]) + '?t=' + Date.now();
+      mainImg.src = thumbUrl;
       mainImg.setAttribute('data-variant', variantValue || '');
       
       // Update active state on thumbs
@@ -606,9 +621,10 @@
         
         if (!mainImg || !thumbs || !variant) return;
         
-        // Update main image with the variant URL
-        const variantUrl = variant.url.split('?')[0] + '?t=' + Date.now();
-        mainImg.src = variantUrl;
+        // Update main image with the variant URL (use thumbnail version)
+        const variantUrl = variant.url.split('?')[0];
+        const thumbUrl = getThumbnailUrl(variantUrl) + '?t=' + Date.now();
+        mainImg.src = thumbUrl;
         mainImg.setAttribute('data-variant', variant.variant || '');
         
         // Update active state on thumbs

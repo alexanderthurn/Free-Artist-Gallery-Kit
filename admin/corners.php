@@ -296,6 +296,10 @@ if (!convert_to_jpg($tempFinalPng, $finalPath)) {
 }
 @unlink($tempFinalPng);
 
+// Generate thumbnail for _final image
+$thumbPath = generate_thumbnail_path($finalPath);
+generate_thumbnail($finalPath, $thumbPath, 512, 1024);
+
 // Regenerate all variants after final image is created/updated
 require_once __DIR__ . '/variants.php';
 try {

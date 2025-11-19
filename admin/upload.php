@@ -134,16 +134,44 @@ for ($i = 0; $i < $count; $i++) {
     $destName = $stem.'.jpg';
     $target = unique_path($dirImages, $destName);
     
-    // Convert image to JPG (handles PNG, WEBP, JPG)
+    // Convert image to JPG (handles PNG, WEBP, JPG) - keep full resolution
+    // Only resize if server gives an error (file too large)
+    $converted = false;
     if (!convert_to_jpg($tmp, $target)) {
-        $errors[] = $name.' (failed to convert/save)';
-        continue;
+        // Try to resize if conversion failed (might be too large)
+        $imageInfo = @getimagesize($tmp);
+        if ($imageInfo !== false) {
+            $src = image_create_from_any($tmp);
+            if ($src) {
+                $srcW = imagesx($src);
+                $srcH = imagesy($src);
+                // Resize to max 2048px on longest side if larger
+                $maxDim = 2048;
+                if ($srcW > $maxDim || $srcH > $maxDim) {
+                    $scale = min($maxDim / $srcW, $maxDim / $srcH);
+                    $newW = (int) floor($srcW * $scale);
+                    $newH = (int) floor($srcH * $scale);
+                    $dst = imagecreatetruecolor($newW, $newH);
+                    imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
+                    $converted = imagejpeg($dst, $target, 90);
+                    imagedestroy($dst);
+                } else {
+                    // Within limits, try direct conversion again
+                    $converted = convert_to_jpg($tmp, $target);
+                }
+                imagedestroy($src);
+            }
+        }
+        if (!$converted) {
+            $errors[] = $name.' (failed to convert/save)';
+            continue;
+        }
     }
 
     // Store uploaded image name for AI processing
     $uploadedImages[] = basename($target);
 
-    // Also create _final.jpg copy (overwrite if exists)
+    // Also create _final.jpg copy (overwrite if exists) - keep full resolution
     $finalStem = preg_replace('/_original$/i', '', $stem);
     $finalName = $finalStem.'_final.jpg';
     $finalTarget = $dirImages.'/'.$finalName;
@@ -153,8 +181,12 @@ for ($i = 0; $i < $count; $i++) {
         @unlink($finalTarget);
     }
     
-    // Copy the JPG to _final
+    // Copy the JPG to _final (full resolution)
     copy($target, $finalTarget);
+    
+    // Generate thumbnail for _final image (similar to optimize_images.php)
+    $thumbPath = generate_thumbnail_path($finalTarget);
+    generate_thumbnail($finalTarget, $thumbPath, 512, 1024);
 
     // For non-AI uploads, create JSON metadata file with title "#n" and frame "white"
     if (!$isAIUpload) {

@@ -339,12 +339,17 @@ function update_gallery_entry(string $base, array $meta, string $imagesDir, stri
         }
     }
     
-    // Copy final image
+    // Copy final image and resize to gallery max dimensions (1536x1536)
     $finalExt = pathinfo($finalImage, PATHINFO_EXTENSION);
     $destImage = $galleryDir.$filename.'.'.$finalExt;
+    
+    // Copy first
     if (!copy($imagesDir.$finalImage, $destImage)) {
         return ['ok' => false, 'error' => 'Failed to copy image'];
     }
+    
+    // Resize to gallery max dimensions (1536x1536)
+    resize_image_max($destImage, 1536, 1536, false);
     
     // Add original_filename to metadata
     $meta['original_filename'] = $base;
@@ -368,6 +373,8 @@ function update_gallery_entry(string $base, array $meta, string $imagesDir, stri
         $destVariant = $galleryDir.$filename.'_variant_'.$variantName.'.'.$variantExt;
         
         if (copy($imagesDir.$variantFile, $destVariant)) {
+            // Resize variant to gallery max dimensions (1536x1536)
+            resize_image_max($destVariant, 1536, 1536, false);
             $copiedVariants[] = basename($destVariant);
         }
     }
@@ -514,6 +521,105 @@ function replicate_call_model(string $token, string $model, array $payload): arr
     }
     
     return $resp;
+}
+
+/**
+ * Resize image to maximum dimensions, maintaining aspect ratio
+ * Overwrites original if resizing is needed
+ * If force is true, always resizes even if within limits (recompresses with current quality settings)
+ */
+function resize_image_max(string $path, int $maxWidth, int $maxHeight, bool $force = false): void {
+    $src = image_create_from_any($path);
+    if (!$src) return;
+    
+    $srcW = imagesx($src);
+    $srcH = imagesy($src);
+    
+    // Check if resizing is needed
+    if (!$force && $srcW <= $maxWidth && $srcH <= $maxHeight) {
+        imagedestroy($src);
+        return;
+    }
+    
+    // Calculate new dimensions maintaining aspect ratio
+    // If force and within limits, keep original dimensions but recompress
+    if ($force && $srcW <= $maxWidth && $srcH <= $maxHeight) {
+        $newW = $srcW;
+        $newH = $srcH;
+    } else {
+        $scale = min($maxWidth / $srcW, $maxHeight / $srcH);
+        $newW = (int) floor($srcW * $scale);
+        $newH = (int) floor($srcH * $scale);
+    }
+    
+    // Create resized image
+    $dst = imagecreatetruecolor($newW, $newH);
+    
+    // Preserve transparency for PNG
+    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    if ($ext === 'png') {
+        imagealphablending($dst, false);
+        imagesavealpha($dst, true);
+        $transparent = imagecolorallocatealpha($dst, 255, 255, 255, 127);
+        imagefill($dst, 0, 0, $transparent);
+    }
+    
+    imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
+    
+    // Save over original
+    image_save_as($path, $dst);
+    
+    imagedestroy($src);
+    imagedestroy($dst);
+}
+
+/**
+ * Generate thumbnail from source image
+ */
+function generate_thumbnail(string $sourcePath, string $thumbPath, int $maxWidth, int $maxHeight): void {
+    $src = image_create_from_any($sourcePath);
+    if (!$src) return;
+    
+    $srcW = imagesx($src);
+    $srcH = imagesy($src);
+    
+    // Calculate thumbnail dimensions maintaining aspect ratio
+    $scale = min($maxWidth / $srcW, $maxHeight / $srcH);
+    $newW = (int) floor($srcW * $scale);
+    $newH = (int) floor($srcH * $scale);
+    
+    // Create thumbnail
+    $dst = imagecreatetruecolor($newW, $newH);
+    
+    // Preserve transparency for PNG
+    $ext = strtolower(pathinfo($thumbPath, PATHINFO_EXTENSION));
+    if ($ext === 'png') {
+        imagealphablending($dst, false);
+        imagesavealpha($dst, true);
+        $transparent = imagecolorallocatealpha($dst, 255, 255, 255, 127);
+        imagefill($dst, 0, 0, $transparent);
+    }
+    
+    imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
+    
+    // Save thumbnail with higher quality (95 for JPEG, 90 for WebP)
+    $ext = strtolower(pathinfo($thumbPath, PATHINFO_EXTENSION));
+    $quality = ($ext === 'webp') ? 90 : 100;
+    image_save_as($thumbPath, $dst, $quality);
+    
+    imagedestroy($src);
+    imagedestroy($dst);
+}
+
+/**
+ * Generate thumbnail path from source path
+ */
+function generate_thumbnail_path(string $sourcePath): string {
+    $pathInfo = pathinfo($sourcePath);
+    $dir = $pathInfo['dirname'];
+    $filename = $pathInfo['filename'];
+    $ext = $pathInfo['extension'];
+    return $dir.'/'.$filename.'_thumb.'.$ext;
 }
 
 /**

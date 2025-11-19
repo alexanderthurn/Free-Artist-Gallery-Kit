@@ -81,6 +81,10 @@ try {
             throw new RuntimeException('Failed to create/replace final image');
         }
         
+        // Generate thumbnail for _final image
+        $thumbPath = generate_thumbnail_path($finalPath);
+        generate_thumbnail($finalPath, $thumbPath, 512, 1024);
+        
         // Regenerate all variants after final image is updated
         require_once __DIR__ . '/variants.php';
         try {

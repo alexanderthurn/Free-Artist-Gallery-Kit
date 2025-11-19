@@ -584,7 +584,7 @@ function process_images(string $action, bool $force = false): void {
             rebuild_gallery();
         }
         
-        // Process gallery images
+        // Process gallery images (these get resized)
         $galleryDir = dirname(__DIR__).'/img/gallery/';
         if (is_dir($galleryDir)) {
             process_directory($galleryDir, $GALLERY_MAX_WIDTH, $GALLERY_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
@@ -595,10 +595,90 @@ function process_images(string $action, bool $force = false): void {
         if (is_dir($uploadDir)) {
             process_directory($uploadDir, $UPLOAD_MAX_WIDTH, $UPLOAD_MAX_HEIGHT, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
         }
+        
+        // Generate thumbnails for admin/images _final images (full resolution, just generate thumbnails)
+        $imagesDir = __DIR__.'/images/';
+        if (is_dir($imagesDir)) {
+            process_admin_images_thumbnails($imagesDir, $THUMBNAIL_MAX_WIDTH, $THUMBNAIL_MAX_HEIGHT, $force);
+        }
     }
     
     if ($action === 'cleanup' || $action === 'both') {
         cleanup_orphaned_files();
+    }
+}
+
+/**
+ * Process admin/images _final and variant images to generate thumbnails only (no resizing)
+ */
+function process_admin_images_thumbnails(string $dir, int $thumbMaxWidth, int $thumbMaxHeight, bool $force = false): void {
+    $files = scandir($dir) ?: [];
+    
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') continue;
+        
+        $filePath = $dir.$file;
+        
+        // Skip directories, JSON files, thumbnails, and _original images
+        if (is_dir($filePath)) continue;
+        if (pathinfo($file, PATHINFO_EXTENSION) === 'json') continue;
+        if (strpos($file, '_thumb.') !== false) continue;
+        
+        $fileStem = pathinfo($file, PATHINFO_FILENAME);
+        
+        // Process _final images and variant images (those with _variant_ in the name)
+        $isFinal = substr($fileStem, -6) === '_final';
+        $isVariant = strpos($fileStem, '_variant_') !== false;
+        
+        // Skip if it's neither _final nor a variant
+        if (!$isFinal && !$isVariant) continue;
+        
+        $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+        if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) continue;
+        
+        // Generate thumbnail (only if needed, unless force is true)
+        $thumbPath = generate_thumbnail_path($filePath);
+        
+        // Check if thumbnail needs to be generated/updated
+        $needsThumbnail = true;
+        if (!$force && is_file($thumbPath)) {
+            // Get source image dimensions
+            $imageInfo = @getimagesize($filePath);
+            if ($imageInfo !== false) {
+                $srcW = $imageInfo[0];
+                $srcH = $imageInfo[1];
+                
+                // Calculate expected thumbnail dimensions
+                $thumbScale = min($thumbMaxWidth / $srcW, $thumbMaxHeight / $srcH);
+                $expectedThumbW = (int) floor($srcW * $thumbScale);
+                $expectedThumbH = (int) floor($srcH * $thumbScale);
+                
+                // Get actual thumbnail dimensions
+                $thumbInfo = @getimagesize($thumbPath);
+                if ($thumbInfo !== false) {
+                    $thumbW = $thumbInfo[0];
+                    $thumbH = $thumbInfo[1];
+                    
+                    // Check if dimensions match (allow 1px tolerance)
+                    $widthMatch = abs($thumbW - $expectedThumbW) <= 1;
+                    $heightMatch = abs($thumbH - $expectedThumbH) <= 1;
+                    
+                    // Check if source is newer than thumbnail
+                    $sourceMtime = filemtime($filePath);
+                    $thumbMtime = filemtime($thumbPath);
+                    $sourceIsNewer = $sourceMtime > $thumbMtime;
+                    
+                    // Only regenerate if dimensions don't match OR source is newer
+                    if ($widthMatch && $heightMatch && !$sourceIsNewer) {
+                        $needsThumbnail = false; // Thumbnail is up to date
+                    }
+                }
+            }
+        }
+        
+        if ($needsThumbnail) {
+            generate_thumbnail($filePath, $thumbPath, $thumbMaxWidth, $thumbMaxHeight);
+        }
     }
 }
 
@@ -668,105 +748,6 @@ function process_directory(string $dir, int $maxWidth, int $maxHeight, int $thum
             generate_thumbnail($filePath, $thumbPath, $thumbMaxWidth, $thumbMaxHeight);
         }
     }
-}
-
-/**
- * Resize image to maximum dimensions, maintaining aspect ratio
- * Overwrites original if resizing is needed
- * If force is true, always resizes even if within limits (recompresses with current quality settings)
- */
-function resize_image_max(string $path, int $maxWidth, int $maxHeight, bool $force = false): void {
-    $src = image_create_from_any($path);
-    if (!$src) return;
-    
-    $srcW = imagesx($src);
-    $srcH = imagesy($src);
-    
-    // Check if resizing is needed
-    if (!$force && $srcW <= $maxWidth && $srcH <= $maxHeight) {
-        imagedestroy($src);
-        return;
-    }
-    
-    // Calculate new dimensions maintaining aspect ratio
-    // If force and within limits, keep original dimensions but recompress
-    if ($force && $srcW <= $maxWidth && $srcH <= $maxHeight) {
-        $newW = $srcW;
-        $newH = $srcH;
-    } else {
-        $scale = min($maxWidth / $srcW, $maxHeight / $srcH);
-        $newW = (int) floor($srcW * $scale);
-        $newH = (int) floor($srcH * $scale);
-    }
-    
-    // Create resized image
-    $dst = imagecreatetruecolor($newW, $newH);
-    
-    // Preserve transparency for PNG
-    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-    if ($ext === 'png') {
-        imagealphablending($dst, false);
-        imagesavealpha($dst, true);
-        $transparent = imagecolorallocatealpha($dst, 255, 255, 255, 127);
-        imagefill($dst, 0, 0, $transparent);
-    }
-    
-    imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
-    
-    // Save over original
-    image_save_as($path, $dst);
-    
-    imagedestroy($src);
-    imagedestroy($dst);
-}
-
-/**
- * Generate thumbnail from source image
- */
-function generate_thumbnail(string $sourcePath, string $thumbPath, int $maxWidth, int $maxHeight): void {
-    $src = image_create_from_any($sourcePath);
-    if (!$src) return;
-    
-    $srcW = imagesx($src);
-    $srcH = imagesy($src);
-    
-    // Calculate thumbnail dimensions maintaining aspect ratio
-    $scale = min($maxWidth / $srcW, $maxHeight / $srcH);
-    $newW = (int) floor($srcW * $scale);
-    $newH = (int) floor($srcH * $scale);
-    
-    // Create thumbnail
-    $dst = imagecreatetruecolor($newW, $newH);
-    
-    // Preserve transparency for PNG
-    $ext = strtolower(pathinfo($thumbPath, PATHINFO_EXTENSION));
-    if ($ext === 'png') {
-        imagealphablending($dst, false);
-        imagesavealpha($dst, true);
-        $transparent = imagecolorallocatealpha($dst, 255, 255, 255, 127);
-        imagefill($dst, 0, 0, $transparent);
-    }
-    
-    imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
-    
-    // Save thumbnail with higher quality (95 for JPEG, 90 for WebP)
-    $ext = strtolower(pathinfo($thumbPath, PATHINFO_EXTENSION));
-    $quality = ($ext === 'webp') ? 90 : 100;
-    image_save_as($thumbPath, $dst, $quality);
-    
-    imagedestroy($src);
-    imagedestroy($dst);
-}
-
-/**
- * Generate thumbnail path from source path
- */
-function generate_thumbnail_path(string $sourcePath): string {
-    $pathInfo = pathinfo($sourcePath);
-    $dir = $pathInfo['dirname'];
-    $filename = $pathInfo['filename'];
-    $ext = $pathInfo['extension'];
-    return $dir.'/'.$filename.'_thumb.'.$ext;
 }
 
 /**

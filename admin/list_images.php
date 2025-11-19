@@ -38,6 +38,10 @@ foreach ($files as $file) {
     if ($file === '.' || $file === '..') continue;
     $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
     if (!in_array($ext, $allowed, true)) continue;
+    
+    // Skip thumbnails - they should not appear in the main list
+    if (strpos($file, '_thumb.') !== false) continue;
+    
     $path = $dir.'/'.$file;
     $stem = pathinfo($file, PATHINFO_FILENAME);
     $extOnly = strtolower(pathinfo($file, PATHINFO_EXTENSION));
@@ -53,6 +57,7 @@ foreach ($files as $file) {
         ];
     }
     $mtime = @filemtime($path) ?: 0;
+    
     // Keep only the latest file per variant
     $item = [
         'name' => $file,

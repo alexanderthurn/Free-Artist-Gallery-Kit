@@ -137,10 +137,15 @@ for ($i = 0; $i < $count; $i++) {
     // Convert image to JPG (handles PNG, WEBP, JPG) - keep full resolution
     // Only resize if server gives an error (file too large)
     $converted = false;
+    $wasResized = false;
+    $originalDimensions = null;
+    $resizedDimensions = null;
+    
     if (!convert_to_jpg($tmp, $target)) {
         // Try to resize if conversion failed (might be too large)
         $imageInfo = @getimagesize($tmp);
         if ($imageInfo !== false) {
+            $originalDimensions = ['width' => $imageInfo[0], 'height' => $imageInfo[1]];
             $src = image_create_from_any($tmp);
             if ($src) {
                 $srcW = imagesx($src);
@@ -148,9 +153,11 @@ for ($i = 0; $i < $count; $i++) {
                 // Resize to max 2048px on longest side if larger
                 $maxDim = 2048;
                 if ($srcW > $maxDim || $srcH > $maxDim) {
+                    $wasResized = true;
                     $scale = min($maxDim / $srcW, $maxDim / $srcH);
                     $newW = (int) floor($srcW * $scale);
                     $newH = (int) floor($srcH * $scale);
+                    $resizedDimensions = ['width' => $newW, 'height' => $newH];
                     $dst = imagecreatetruecolor($newW, $newH);
                     imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $srcW, $srcH);
                     $converted = imagejpeg($dst, $target, 90);
@@ -167,9 +174,18 @@ for ($i = 0; $i < $count; $i++) {
             continue;
         }
     }
-
-    // Store uploaded image name for AI processing
-    $uploadedImages[] = basename($target);
+    
+    // Track resized images for user notification
+    if ($wasResized) {
+        $uploadedImages[] = [
+            'name' => basename($target),
+            'resized' => true,
+            'original' => $originalDimensions,
+            'resized_to' => $resizedDimensions
+        ];
+    } else {
+        $uploadedImages[] = basename($target);
+    }
 
     // Also create _final.jpg copy (overwrite if exists) - keep full resolution
     $finalStem = preg_replace('/_original$/i', '', $stem);
@@ -218,6 +234,17 @@ for ($i = 0; $i < $count; $i++) {
 // Return JSON response for AI uploads
 if ($isAIUpload) {
     header('Content-Type: application/json; charset=utf-8');
+    
+    // Extract just the image names for AI processing (flatten the array)
+    $imageNames = array_map(function($item) {
+        return is_array($item) ? $item['name'] : $item;
+    }, $uploadedImages);
+    
+    // Check if any images were resized
+    $resizedImages = array_filter($uploadedImages, function($item) {
+        return is_array($item) && isset($item['resized']) && $item['resized'];
+    });
+    
     if ($errors) {
         http_response_code(400);
         echo json_encode([
@@ -225,25 +252,33 @@ if ($isAIUpload) {
             'error' => 'Upload errors occurred',
             'errors' => $errors,
             'uploaded' => $uploaded,
-            'uploaded_images' => $uploadedImages
+            'uploaded_images' => $imageNames,
+            'resized_images' => array_values($resizedImages)
         ]);
     } else {
         echo json_encode([
             'ok' => true,
             'uploaded' => $uploaded,
-            'uploaded_images' => $uploadedImages
+            'uploaded_images' => $imageNames,
+            'resized_images' => array_values($resizedImages)
         ]);
     }
     exit;
 }
 
 // Regular redirect response for non-AI uploads
+// Check if any images were resized
+$resizedImages = array_filter($uploadedImages, function($item) {
+    return is_array($item) && isset($item['resized']) && $item['resized'];
+});
+
 $query = http_build_query([
     'uploaded' => $uploaded,
     'errors' => $errors ? count($errors) : 0,
+    'resized' => count($resizedImages),
 ]);
 
-header('Location: admin.html?'.$query);
+header('Location: index.html?'.$query);
 exit;
 
 

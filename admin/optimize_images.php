@@ -14,34 +14,16 @@ $UPLOAD_MAX_HEIGHT = 1536;
 $THUMBNAIL_MAX_WIDTH = 512;
 $THUMBNAIL_MAX_HEIGHT = 1024;
 
-// Clear any output buffer
-ob_clean();
-
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
+    if (ob_get_level() > 0) {
+        ob_clean();
+    }
     echo json_encode(['ok' => false, 'error' => 'Method not allowed']);
     exit;
-}
-
-// Return immediately and process in background
-echo json_encode(['ok' => true, 'message' => 'Processing started in background']);
-
-// Flush output to client
-if (function_exists('fastcgi_finish_request')) {
-    fastcgi_finish_request();
-} else {
-    // Fallback: close connection and continue processing
-    if (ob_get_level()) {
-        ob_end_flush();
-    }
-    flush();
-    if (function_exists('apache_setenv')) {
-        @apache_setenv('no-gzip', 1);
-    }
-    @ini_set('zlib.output_compression', 0);
 }
 
 // Get action parameter
@@ -52,7 +34,9 @@ $force = isset($_POST['force']) && $_POST['force'] === '1';
 // If preview mode, return what will be processed
 if ($preview) {
     $previewData = preview_processing($action, $force);
-    ob_clean(); // Ensure no extra output
+    if (ob_get_level() > 0) {
+        ob_clean(); // Ensure no extra output
+    }
     echo json_encode([
         'ok' => true,
         'preview' => true,
@@ -62,7 +46,9 @@ if ($preview) {
 }
 
 // Return immediately and process in background
-ob_clean(); // Ensure no extra output
+if (ob_get_level() > 0) {
+    ob_clean(); // Ensure no extra output
+}
 echo json_encode(['ok' => true, 'message' => 'Processing started in background'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
 // Flush output to client

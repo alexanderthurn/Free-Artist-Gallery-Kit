@@ -1066,26 +1066,33 @@
         statusText.textContent = isAIUpload ? 'Bilder werden vorbereitet...' : 'Bilder werden vorbereitet...';
         
         try {
-          // Resize images if needed
-          const resizedFiles = [];
-          for (let i = 0; i < files.length; i++) {
-            statusText.textContent = isAIUpload 
-              ? `Bild ${i + 1}/${files.length} wird vorbereitet...`
-              : `Bild ${i + 1}/${files.length} wird vorbereitet...`;
-            try {
-              const resized = await resizeImage(files[i]);
-              resizedFiles.push(resized);
-            } catch (error) {
-              console.error('Error resizing image:', error);
-              // Use original file if resize fails
-              resizedFiles.push(files[i]);
+          // For standard uploads, keep original resolution (no client-side resizing)
+          // For AI uploads, resize to avoid server limits
+          const filesToUpload = [];
+          if (isAIUpload) {
+            // Resize images for AI uploads to avoid server limits
+            const resizedFiles = [];
+            for (let i = 0; i < files.length; i++) {
+              statusText.textContent = `Bild ${i + 1}/${files.length} wird vorbereitet...`;
+              try {
+                const resized = await resizeImage(files[i]);
+                resizedFiles.push(resized);
+              } catch (error) {
+                console.error('Error resizing image:', error);
+                // Use original file if resize fails
+                resizedFiles.push(files[i]);
+              }
             }
+            filesToUpload.push(...resizedFiles);
+          } else {
+            // Standard upload: use original files without resizing
+            filesToUpload.push(...files);
           }
           
           // Create FormData
           const fd = new FormData();
-          for (let i = 0; i < resizedFiles.length; i++) {
-            fd.append('images[]', resizedFiles[i]);
+          for (let i = 0; i < filesToUpload.length; i++) {
+            fd.append('images[]', filesToUpload[i]);
           }
           
           // Add AI upload flag
@@ -1150,6 +1157,11 @@
           if (isAIUpload) {
             // Parse response to get uploaded image names
             if (response.ok && response.uploaded_images && response.uploaded_images.length > 0) {
+              // Show warning if images were resized
+              if (response.resized_images && response.resized_images.length > 0) {
+                const resizedCount = response.resized_images.length;
+                showToast(`⚠️ Warnung: ${resizedCount} Bild(er) wurden vom Server automatisch verkleinert, da die Originalgröße zu groß war.`, 'error', 8000);
+              }
               // Process each uploaded image with AI
               await processAIImageWorkflow(response.uploaded_images, startTime);
             } else {
@@ -1157,6 +1169,8 @@
               refresh();
             }
           } else {
+            // Check if response contains resized_images info (for standard uploads via redirect)
+            // The redirect will handle showing the flash message
             showToast(`${files.length} Bild(er) erfolgreich hochgeladen`, 'success');
             fileInputElement.value = '';
             setTimeout(() => {
@@ -1439,18 +1453,23 @@
   <script>
     function showFlashFromQuery() {
       const url = new URL(window.location.href);
-      const processed = url.searchParams.get('processed');
+      const uploaded = url.searchParams.get('uploaded');
       const errors = url.searchParams.get('errors');
+      const resized = url.searchParams.get('resized');
       const errorsDetailRaw = url.searchParams.get('errors_detail');
-      if (!processed && !errors) return;
+      
+      if (!uploaded && !errors && !resized) return;
+      
       const box = document.getElementById('flash');
       box.classList.remove('hidden');
-      const p = parseInt(processed || '0', 10);
+      const u = parseInt(uploaded || '0', 10);
       const e = parseInt(errors || '0', 10);
+      const r = parseInt(resized || '0', 10);
       let html = '';
+      
       if (e > 0) {
         box.classList.remove('success');
-        html += `<strong>Processing finished:</strong> ${p} succeeded, ${e} failed.`;
+        html += `<strong>Upload finished:</strong> ${u} succeeded, ${e} failed.`;
         if (errorsDetailRaw) {
           try {
             const details = JSON.parse(errorsDetailRaw);
@@ -1460,10 +1479,19 @@
             }
           } catch {}
         }
-      } else {
+      } else if (u > 0) {
         box.classList.add('success');
-        html += `<strong>Success:</strong> Processed ${p} image(s).`;
+        html += `<strong>Success:</strong> ${u} Bild(er) erfolgreich hochgeladen.`;
+        
+        // Show warning if images were resized
+        if (r > 0) {
+          html += `<div style="margin-top:8px; padding:8px; background:#fff3cd; border:1px solid #ffc107; border-radius:4px; color:#856404;">
+            <strong>⚠️ Warnung:</strong> ${r} Bild(er) wurden vom Server automatisch verkleinert, da die Originalgröße zu groß war. 
+            Die _original Version entspricht nicht mehr dem hochgeladenen Bild.
+          </div>`;
+        }
       }
+      
       box.innerHTML = html;
       // Clean params from URL without reloading
       window.history.replaceState({}, '', url.pathname);

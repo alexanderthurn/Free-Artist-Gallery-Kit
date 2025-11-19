@@ -189,12 +189,35 @@ function ensure_max_1000(string $path): void {
 }
 
 function convert_to_jpg(string $sourcePath, string $targetPath): bool {
+    $imageInfo = getimagesize($sourcePath);
+    if ($imageInfo === false) return false;
+    
+    // Read EXIF orientation if available
+    $exif = function_exists('exif_read_data') ? @exif_read_data($sourcePath) : false;
+    $orientation = $exif && isset($exif['Orientation']) ? (int)$exif['Orientation'] : 1;
+    $needsRotation = ($orientation > 1);
+    
+    // If source is already JPEG and no rotation needed, just copy it (preserve original compression)
+    if ($imageInfo[2] === IMAGETYPE_JPEG && !$needsRotation) {
+        return copy($sourcePath, $targetPath);
+    }
+    
     // Try Imagick first if available
     if (extension_loaded('imagick')) {
         try {
             $imagick = new Imagick($sourcePath);
+            
+            // Auto-orient image based on EXIF orientation
+            if ($needsRotation) {
+                $imagick->autoOrient();
+            }
+            
             $imagick->setImageFormat('jpeg');
-            $imagick->setImageCompressionQuality(90);
+            // Use adaptive quality: start with 85, but optimize for file size
+            $imagick->setImageCompressionQuality(85);
+            $imagick->setImageCompression(Imagick::COMPRESSION_JPEG);
+            $imagick->stripImage(); // Remove EXIF data to reduce file size
+            
             // Handle transparency: flatten to white background
             if ($imagick->getImageAlphaChannel()) {
                 $white = new ImagickPixel('white');
@@ -202,9 +225,37 @@ function convert_to_jpg(string $sourcePath, string $targetPath): bool {
                 $imagick->setImageAlphaChannel(Imagick::ALPHACHANNEL_REMOVE);
                 $imagick = $imagick->mergeImageLayers(Imagick::LAYER_METHOD_FLATTEN);
             }
+            
             $result = $imagick->writeImage($targetPath);
             $imagick->clear();
             $imagick->destroy();
+            
+            // If converted file is larger than original, try lower quality
+            if ($result && is_file($targetPath) && is_file($sourcePath)) {
+                $originalSize = filesize($sourcePath);
+                $convertedSize = filesize($targetPath);
+                if ($convertedSize > $originalSize && $imageInfo[2] === IMAGETYPE_JPEG) {
+                    // Try with lower quality to match or beat original size
+                    $imagick = new Imagick($sourcePath);
+                    if ($needsRotation) {
+                        $imagick->autoOrient();
+                    }
+                    $imagick->setImageFormat('jpeg');
+                    $imagick->setImageCompressionQuality(80);
+                    $imagick->setImageCompression(Imagick::COMPRESSION_JPEG);
+                    $imagick->stripImage();
+                    if ($imagick->getImageAlphaChannel()) {
+                        $white = new ImagickPixel('white');
+                        $imagick->setImageBackgroundColor($white);
+                        $imagick->setImageAlphaChannel(Imagick::ALPHACHANNEL_REMOVE);
+                        $imagick = $imagick->mergeImageLayers(Imagick::LAYER_METHOD_FLATTEN);
+                    }
+                    $imagick->writeImage($targetPath);
+                    $imagick->clear();
+                    $imagick->destroy();
+                }
+            }
+            
             return $result;
         } catch (Exception $e) {
             // Fall through to GD fallback
@@ -212,9 +263,6 @@ function convert_to_jpg(string $sourcePath, string $targetPath): bool {
     }
     
     // Fallback to GD
-    $imageInfo = getimagesize($sourcePath);
-    if ($imageInfo === false) return false;
-    
     $sourceImage = null;
     switch ($imageInfo[2]) {
         case IMAGETYPE_JPEG:
@@ -240,9 +288,106 @@ function convert_to_jpg(string $sourcePath, string $targetPath): bool {
         $sourceImage = $jpg;
     }
     
-    $result = imagejpeg($sourceImage, $targetPath, 90);
+    // Apply EXIF orientation rotation/flip
+    if ($needsRotation) {
+        $sourceImage = apply_exif_orientation($sourceImage, $orientation);
+    }
+    
+    // Use quality 85 for better compression (lower file size)
+    // If original was JPEG and we're recompressing, try to match original size
+    $quality = 85;
+    if ($imageInfo[2] === IMAGETYPE_JPEG && !$needsRotation) {
+        // Already handled above (copy), but if we get here, use original quality estimate
+        $quality = 85;
+    }
+    
+    $result = imagejpeg($sourceImage, $targetPath, $quality);
+    
+    // If converted file is larger than original JPEG, try lower quality
+    if ($result && is_file($targetPath) && is_file($sourcePath) && $imageInfo[2] === IMAGETYPE_JPEG) {
+        $originalSize = filesize($sourcePath);
+        $convertedSize = filesize($targetPath);
+        if ($convertedSize > $originalSize) {
+            // Try with progressively lower quality
+            for ($q = 80; $q >= 70; $q -= 5) {
+                imagejpeg($sourceImage, $targetPath, $q);
+                if (filesize($targetPath) <= $originalSize) {
+                    break;
+                }
+            }
+        }
+    }
+    
     imagedestroy($sourceImage);
     return $result;
+}
+
+/**
+ * Apply EXIF orientation to image resource
+ */
+function apply_exif_orientation($image, int $orientation) {
+    if ($orientation === 1 || $orientation === 0) {
+        return $image; // No rotation needed
+    }
+    
+    $width = imagesx($image);
+    $height = imagesy($image);
+    
+    switch ($orientation) {
+        case 2: // Flip horizontal
+            $flipped = imagecreatetruecolor($width, $height);
+            imagecopyresampled($flipped, $image, 0, 0, $width - 1, 0, $width, $height, -$width, $height);
+            imagedestroy($image);
+            return $flipped;
+            
+        case 3: // Rotate 180
+            $rotated = imagecreatetruecolor($width, $height);
+            imagecopyresampled($rotated, $image, 0, 0, $width - 1, $height - 1, $width, $height, -$width, -$height);
+            imagedestroy($image);
+            return $rotated;
+            
+        case 4: // Flip vertical
+            $flipped = imagecreatetruecolor($width, $height);
+            imagecopyresampled($flipped, $image, 0, 0, 0, $height - 1, $width, $height, $width, -$height);
+            imagedestroy($image);
+            return $flipped;
+            
+        case 5: // Rotate 90 clockwise and flip horizontal
+            $rotated = imagecreatetruecolor($height, $width);
+            imagecopyresampled($rotated, $image, 0, 0, 0, $width - 1, $height, $width, $height, -$width);
+            imagedestroy($image);
+            $width = imagesx($rotated);
+            $height = imagesy($rotated);
+            $flipped = imagecreatetruecolor($width, $height);
+            imagecopyresampled($flipped, $rotated, 0, 0, $width - 1, 0, $width, $height, -$width, $height);
+            imagedestroy($rotated);
+            return $flipped;
+            
+        case 6: // Rotate 90 clockwise
+            // Use imagerotate with -90 degrees, then adjust
+            $rotated = imagerotate($image, -90, 0);
+            imagedestroy($image);
+            return $rotated;
+            
+        case 7: // Rotate 90 clockwise and flip vertical
+            $rotated = imagerotate($image, -90, 0);
+            imagedestroy($image);
+            $width = imagesx($rotated);
+            $height = imagesy($rotated);
+            $flipped = imagecreatetruecolor($width, $height);
+            imagecopyresampled($flipped, $rotated, 0, 0, 0, $height - 1, $width, $height, $width, -$height);
+            imagedestroy($rotated);
+            return $flipped;
+            
+        case 8: // Rotate 90 counter-clockwise
+            // Use imagerotate with 90 degrees
+            $rotated = imagerotate($image, 90, 0);
+            imagedestroy($image);
+            return $rotated;
+            
+        default:
+            return $image;
+    }
 }
 
 /**

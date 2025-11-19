@@ -64,6 +64,18 @@
     @media (hover: none) {
       .main-image-wrapper.show-segmented-button .segmented-button { opacity: 1; visibility: visible; }
     }
+    .image-controls { position: absolute; top: 20px; right: 20px; display: flex; border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 12px; overflow: hidden; background: #28a745; box-shadow: 0 2px 8px rgba(0,0,0,0.25); z-index: 60; opacity: 0; visibility: hidden; transition: opacity 0.2s ease, visibility 0.2s ease; }
+    .main-image-wrapper.show-segmented-button:hover .image-controls { opacity: 1; visibility: visible; }
+    @media (hover: none) {
+      .main-image-wrapper.show-segmented-button .image-controls { opacity: 1; visibility: visible; }
+    }
+    .image-control-btn { background: #28a745; color: #fff; padding: 8px 16px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s ease; border: none; border-right: 1px solid rgba(255, 255, 255, 0.3); min-width: 40px; height: 32px; }
+    .image-control-btn:last-child { border-right: none; }
+    .image-control-btn:hover { background: #218838; }
+    .image-control-btn:active { background: #1e7e34; }
+    .image-control-btn.rotate { font-size: 16px; }
+    .image-control-btn.open-original { font-size: 14px; }
+    .image-control-btn.open-final { font-size: 14px; }
     .segmented-button-section { flex: 1; padding: 10px 12px; text-align: center; border-right: 1px solid #ccc; cursor: pointer; transition: all 0.2s ease; font-size: 13px; background: #fff; color: #000; }
     .segmented-button-section:last-child { border-right: none; }
     .segmented-button-section:hover { background: #f5f5f5; }
@@ -370,6 +382,11 @@
               ` : '<div class="main-image" style="aspect-ratio: 1/1; display: flex; align-items: center; justify-content: center; color: #999;">Kein Final-Bild</div>'}
             </div>
             ${finalVariant ? `
+            <div class="image-controls">
+              <button class="image-control-btn rotate" onclick="event.stopPropagation(); rotateImage('${escapeHtml(finalVariant.name)}', '${escapeHtml(g.base)}', this)" title="Bild um 90° drehen">↻</button>
+              <button class="image-control-btn open-original" onclick="event.stopPropagation(); openOriginalImage('${escapeHtml(originalVariant.name)}')" title="Originalbild öffnen">O</button>
+              <button class="image-control-btn open-final" onclick="event.stopPropagation(); openFinalImage('${escapeHtml(finalVariant.name)}')" title="Final-Bild öffnen">F</button>
+            </div>
             <div class="segmented-button">
               <div class="segmented-button-section" onclick='doAction("${escapeHtml(originalVariant.name)}", "restore", this)'>Originalbild verwenden</div>
               <div class="segmented-button-section ai-style" onclick='doCorners("${escapeHtml(originalVariant.name)}", this)'><span class="star-icon">⭐</span>KI Bild freistellen lassen</div>
@@ -1872,6 +1889,74 @@
         btn.disabled = false;
         btn.textContent = prev;
       }
+    }
+
+    async function rotateImage(finalImageName, imageBaseName, btn) {
+      // Extract imageBaseName and update URL
+      updatePaintingURL(imageBaseName);
+      
+      const prevOpacity = btn.style.opacity;
+      btn.style.opacity = '0.5';
+      btn.style.cursor = 'wait';
+      showToast('Bild wird gedreht...', 'info');
+
+      try {
+        const body = new FormData();
+        body.set('image', finalImageName);
+
+        const res = await fetch('rotate_image.php', { method: 'POST', body });
+        if (!res.ok) {
+          const msg = await res.text();
+          showToast('Drehen fehlgeschlagen: ' + msg, 'error');
+          return;
+        }
+
+        const data = await res.json().catch(() => ({}));
+        if (!data.ok) {
+          showToast('Drehen fehlgeschlagen: ' + (data.error || 'Unknown'), 'error');
+          return;
+        }
+
+        showToast('Bild erfolgreich gedreht und Thumbnails aktualisiert', 'success');
+        
+        // Update only the affected image row instead of full page reload
+        await updateImageRow(imageBaseName);
+      } catch (error) {
+        showToast('Fehler: ' + error.message, 'error');
+      } finally {
+        btn.style.opacity = prevOpacity || '';
+        btn.style.cursor = '';
+      }
+    }
+
+    function openOriginalImage(originalImageName) {
+      // Find the button that was clicked to get the row
+      const btn = event.target.closest('.image-control-btn');
+      const row = btn ? btn.closest('.rowItem') : null;
+      const imageBaseName = row ? row.dataset.paintingBase : null;
+      
+      if (imageBaseName) {
+        updatePaintingURL(imageBaseName);
+      }
+      
+      // Open original image in new tab (not thumbnail)
+      const originalUrl = 'images/' + encodeURIComponent(originalImageName);
+      window.open(originalUrl, '_blank');
+    }
+
+    function openFinalImage(finalImageName) {
+      // Find the button that was clicked to get the row
+      const btn = event.target.closest('.image-control-btn');
+      const row = btn ? btn.closest('.rowItem') : null;
+      const imageBaseName = row ? row.dataset.paintingBase : null;
+      
+      if (imageBaseName) {
+        updatePaintingURL(imageBaseName);
+      }
+      
+      // Open final image in new tab (not thumbnail)
+      const finalUrl = 'images/' + encodeURIComponent(finalImageName);
+      window.open(finalUrl, '_blank');
     }
     
     // Update site domain link in header

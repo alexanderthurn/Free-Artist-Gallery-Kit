@@ -98,7 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Only initialize gallery-related features if gallery exists (not on imprint/privacy pages)
   if (gallery) {
     initAuthorSection();
-    initAnimatedFace();
+    initAuthorVariantReveal();
     initFlashlight();
     initModal();
     initInfiniteScroll();
@@ -244,198 +244,6 @@ function initAuthorSection() {
   }
 }
 
-// Initialize Animated Face
-function initAnimatedFace() {
-  const canvas = document.getElementById('author-face-canvas');
-  if (!canvas) return;
-  
-  const ctx = canvas.getContext('2d');
-  const MANIFEST_URL = 'img/upload/artist-anim-face.json';
-  
-  fetch(MANIFEST_URL)
-    .then((r) => r.json())
-    .then((manifest) => {
-      const STEP_WIDTH = manifest.step;
-      const frameWidth = manifest.frameWidth;
-      const frameHeight = manifest.frameHeight;
-      const columns = manifest.columns;
-      
-      // Get sections from manifest
-      let sections = Array.isArray(manifest.sections) ? manifest.sections : [
-        { name: 'default', displayName: 'default', startIndex: 0, frameCount: manifest.frameCount }
-      ];
-      let currentSectionIndex = sections.findIndex(s => s.displayName === 'default' || s.name === 'default');
-      if (currentSectionIndex === -1) currentSectionIndex = 0;
-      let currentSection = sections[currentSectionIndex];
-      
-      // Resolve sprite path relative to the manifest URL
-      const manifestBase = new URL(MANIFEST_URL, window.location.href);
-      const SPRITE_SRC = new URL(manifest.image, manifestBase).toString();
-      
-      const sprite = new Image();
-      sprite.src = SPRITE_SRC;
-      sprite.decoding = 'async';
-      sprite.onload = () => {
-        // Get the wrapper to determine canvas size
-        const wrapper = canvas.closest('.author-image-wrapper');
-        if (!wrapper) return;
-        
-        // Draw initial frame (180° - looking left/backwards)
-        let currentAngleDeg = 180;
-        
-        // Set canvas size to match wrapper with high DPI for sharp rendering
-        const updateCanvasSize = () => {
-          const rect = wrapper.getBoundingClientRect();
-          const dpr = window.devicePixelRatio || 1;
-          
-          // Get computed width and height from wrapper (respects aspect-ratio)
-          const computedStyle = window.getComputedStyle(wrapper);
-          const width = parseFloat(computedStyle.width) || rect.width;
-          const height = parseFloat(computedStyle.height) || rect.height;
-          
-          // Set CSS size (let CSS handle aspect-ratio)
-          canvas.style.width = width + 'px';
-          canvas.style.height = height + 'px';
-          
-          // Set internal resolution (higher for sharp rendering)
-          canvas.width = width * dpr;
-          canvas.height = height * dpr;
-          
-          // Reset transformation and scale context to match device pixel ratio
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.scale(dpr, dpr);
-          
-          // Redraw current frame at new size
-          drawFrameByAngle(currentAngleDeg);
-        };
-        
-        // Initial size setup
-        updateCanvasSize();
-        
-        // Update on resize
-        window.addEventListener('resize', updateCanvasSize);
-        
-        // Draw initial frame at 180 degrees (looking left/backwards)
-        drawFrameByAngle(180);
-        
-        function angleFromCenter(clientX, clientY) {
-          const rect = canvas.getBoundingClientRect();
-          const centerX = rect.left + rect.width / 2;
-          const centerY = rect.top + rect.height / 2;
-          const dx = clientX - centerX;
-          const dy = centerY - clientY; // invert Y so positive is up
-          let deg = Math.atan2(dy, dx) * (180 / Math.PI); // -180..180, 0=right, 90=up
-          if (deg < 0) deg += 360; // 0..360
-          return deg;
-        }
-        
-        function angleToIndex(deg) {
-          const snapped = Math.round(deg / STEP_WIDTH) * STEP_WIDTH;
-          const normalized = ((snapped % 360) + 360) % 360;
-          const idx = Math.floor(normalized / STEP_WIDTH);
-          return Math.min((currentSection.frameCount || 0) - 1, Math.max(0, idx));
-        }
-        
-        function drawFrameByAngle(deg) {
-          const idx = angleToIndex(deg);
-          drawFrame(idx);
-        }
-        
-        function drawFrame(index) {
-          // Translate section-local index to global atlas index
-          const globalIndex = (currentSection.startIndex || 0) + index;
-          const col = globalIndex % columns;
-          const row = Math.floor(globalIndex / columns);
-          const sx = col * frameWidth;
-          const sy = row * frameHeight;
-          
-          // Get display size (CSS size, not internal resolution)
-          const rect = wrapper.getBoundingClientRect();
-          const displayWidth = rect.width;
-          const displayHeight = rect.height;
-          
-          // Clear and draw scaled to display size
-          ctx.clearRect(0, 0, displayWidth, displayHeight);
-          ctx.drawImage(sprite, sx, sy, frameWidth, frameHeight, 0, 0, displayWidth, displayHeight);
-        }
-        
-        function handlePointer(clientX, clientY) {
-          const deg = angleFromCenter(clientX, clientY);
-          currentAngleDeg = deg;
-          drawFrameByAngle(currentAngleDeg);
-        }
-        
-        // Mouse move
-        window.addEventListener('mousemove', (e) => handlePointer(e.clientX, e.clientY));
-        
-        // Touch support - only activate above author-short section
-        function shouldHandleTouch(clientX, clientY) {
-          // Get canvas and author-short elements
-          const canvasRect = canvas.getBoundingClientRect();
-          const authorShort = document.querySelector('.author-short');
-          
-          // Check if touch is over/near the canvas area (with some tolerance)
-          const tolerance = 50; // pixels tolerance around canvas
-          const isOverCanvas = clientX >= canvasRect.left - tolerance &&
-                               clientX <= canvasRect.right + tolerance &&
-                               clientY >= canvasRect.top - tolerance &&
-                               clientY <= canvasRect.bottom + tolerance;
-          
-          if (!isOverCanvas) return false; // Not over canvas, don't handle
-          
-          // If author-short exists, check if touch is above its bottom boundary
-          if (authorShort) {
-            const authorShortRect = authorShort.getBoundingClientRect();
-            const authorShortBottom = authorShortRect.bottom;
-            // Only handle touch if it's above the author-short bottom boundary
-            return clientY < authorShortBottom;
-          }
-          
-          // If no author-short, allow handling if over canvas
-          return true;
-        }
-        
-        window.addEventListener(
-          'touchstart',
-          (e) => {
-            if (e.touches && e.touches.length > 0) {
-              const t = e.touches[0];
-              // Only prevent default and handle if touch is over canvas and above author-short
-              if (shouldHandleTouch(t.clientX, t.clientY)) {
-                e.preventDefault();
-                handlePointer(t.clientX, t.clientY);
-              }
-            }
-          },
-          { passive: false }
-        );
-        
-        window.addEventListener(
-          'touchmove',
-          (e) => {
-            if (e.touches && e.touches.length > 0) {
-              const t = e.touches[0];
-              // Only prevent default and handle if touch is over canvas and above author-short
-              if (shouldHandleTouch(t.clientX, t.clientY)) {
-                e.preventDefault();
-                handlePointer(t.clientX, t.clientY);
-              }
-            }
-          },
-          { passive: false }
-        );
-        
-        // Initialize variant reveal effect for portrait after canvas is set up
-        initAuthorVariantReveal();
-      };
-    })
-    .catch((error) => {
-      console.error('Error loading animated face:', error);
-      // Still initialize variant reveal even if canvas fails to load
-      initAuthorVariantReveal();
-    });
-}
-
 // Initialize variant reveal effect for author portrait
 function initAuthorVariantReveal() {
   const wrapper = document.querySelector('.author-image-wrapper');
@@ -579,10 +387,10 @@ function initAuthorVariantReveal() {
   // Touch handler for mobile devices
   wrapper.addEventListener('touchstart', handlePortraitClick, { passive: false });
   
-  // Also make canvas clickable
-  const canvas = document.getElementById('author-face-canvas');
-  if (canvas) {
-    canvas.style.cursor = 'pointer';
+  // Also make photo clickable
+  const authorPhoto = document.getElementById('author-photo');
+  if (authorPhoto) {
+    authorPhoto.style.cursor = 'pointer';
   }
   
   // On touch devices, don't show hover effect
@@ -1588,7 +1396,7 @@ function initFlyingHearts() {
     heart.className = 'flying-heart';
     
     // Get author photo position
-    const authorPhoto = document.getElementById('author-face-canvas');
+    const authorPhoto = document.getElementById('author-photo');
     if (!authorPhoto) return; // Don't create heart if photo doesn't exist
     
     const photoRect = authorPhoto.getBoundingClientRect();

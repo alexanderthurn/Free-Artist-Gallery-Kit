@@ -1190,6 +1190,12 @@ function updateModalImage() {
     modalImage.src = imageUrl;
     modalImage.alt = 'Gemälde';
     
+    // Show/hide variant hint based on whether a variant is displayed
+    const variantHint = document.getElementById('modal-variant-hint');
+    if (variantHint) {
+      variantHint.style.display = currentVariantIndex > 0 ? 'flex' : 'none';
+    }
+    
     // Update the link to the raw image
     const modalImageLink = document.getElementById('modal-image-link');
     if (modalImageLink) {

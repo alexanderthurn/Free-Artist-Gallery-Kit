@@ -163,6 +163,20 @@ if ($inGallery) {
     update_gallery_entry($originalFilename, $meta, $imagesDir, $galleryDir);
 }
 
+// Regenerate all variants after final image is saved
+require_once __DIR__ . '/variants.php';
+try {
+    // Get dimensions from metadata if available
+    $width = isset($meta['width']) ? (string)$meta['width'] : null;
+    $height = isset($meta['height']) ? (string)$meta['height'] : null;
+    $regenerateResult = regenerateAllVariants($base, $width, $height);
+    // Log result but don't fail if variant regeneration fails
+    error_log("Variant regeneration for {$base}: " . json_encode($regenerateResult));
+} catch (Exception $e) {
+    // Log error but don't fail the save action
+    error_log("Failed to regenerate variants for {$base}: " . $e->getMessage());
+}
+
 echo json_encode(['ok' => true, 'in_gallery' => $inGallery]);
 exit;
 

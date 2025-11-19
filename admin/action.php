@@ -80,6 +80,18 @@ try {
         if (!copy($originalPath, $finalPath)) {
             throw new RuntimeException('Failed to create/replace final image');
         }
+        
+        // Regenerate all variants after final image is updated
+        require_once __DIR__ . '/variants.php';
+        try {
+            $regenerateResult = regenerateAllVariants($base);
+            // Log result but don't fail if variant regeneration fails
+            error_log("Variant regeneration for {$base}: " . json_encode($regenerateResult));
+        } catch (Exception $e) {
+            // Log error but don't fail the restore action
+            error_log("Failed to regenerate variants for {$base}: " . $e->getMessage());
+        }
+        
         echo json_encode(['ok' => true]);
         exit;
     } elseif ($action === 'room') {

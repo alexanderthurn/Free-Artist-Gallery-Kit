@@ -296,6 +296,17 @@ if (!convert_to_jpg($tempFinalPng, $finalPath)) {
 }
 @unlink($tempFinalPng);
 
+// Regenerate all variants after final image is created/updated
+require_once __DIR__ . '/variants.php';
+try {
+    $regenerateResult = regenerateAllVariants($name);
+    // Log result but don't fail if variant regeneration fails
+    error_log("Variant regeneration for {$name}: " . json_encode($regenerateResult));
+} catch (Exception $e) {
+    // Log error but don't fail the corners action
+    error_log("Failed to regenerate variants for {$name}: " . $e->getMessage());
+}
+
 // Return relative paths from admin directory
 $colorPathRel = 'images/' . basename($colorPath);
 $finalPathRel = 'images/' . basename($finalPath);

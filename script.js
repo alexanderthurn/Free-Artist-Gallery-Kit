@@ -596,7 +596,8 @@ function renderPaintings(paintings) {
     wrapper.className = 'painting-wrapper';
     
     const frame = document.createElement('div');
-    frame.className = 'painting-frame';
+    const frameType = painting.frame_type || 'white';
+    frame.className = `painting-frame frame-${frameType}`;
     
     // Container for image reveal effect
     const imageContainer = document.createElement('div');

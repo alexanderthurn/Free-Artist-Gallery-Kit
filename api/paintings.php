@@ -116,7 +116,8 @@ foreach ($imageFiles as $imageFile) {
         'height' => $metadata['height'] ?? '',
         'tags' => $metadata['tags'] ?? '',
         'date' => $metadata['date'] ?? '',
-        'sold' => isset($metadata['sold']) && $metadata['sold'] === true
+        'sold' => isset($metadata['sold']) && $metadata['sold'] === true,
+        'frame_type' => $metadata['frame_type'] ?? 'white'
     ];
     
     // Find variant images for this painting

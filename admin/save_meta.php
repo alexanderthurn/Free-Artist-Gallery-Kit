@@ -43,6 +43,7 @@ $data = [
     'tags' => trim((string)($_POST['tags'] ?? '')),
     'date' => trim((string)($_POST['date'] ?? '')),
     'sold' => isset($_POST['sold']) && $_POST['sold'] === '1',
+    'frame_type' => trim((string)($_POST['frame_type'] ?? 'white')),
 ];
 
 // Preserve original_filename if it exists in existing metadata, otherwise set it

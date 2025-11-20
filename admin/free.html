@@ -147,6 +147,7 @@
       
       <div class="controls">
         <button id="resetBtn">Punkte zurücksetzen</button>
+        <button id="aiCornersBtn">KI-Ecken erkennen (Replicate)</button>
         <button id="saveBtn" class="primary">Speichern</button>
         <button onclick="window.location.href='index.html'">Zurück zur Übersicht</button>
       </div>
@@ -774,6 +775,69 @@
       drawZoom(mouseX, mouseY);
     });
 
+    // Apply detected corners to canvas
+    function applyCornersToCanvas(detectedCorners) {
+      if (!detectedCorners || !Array.isArray(detectedCorners) || detectedCorners.length !== 4) {
+        alert('Ungültige Eckpunkte erhalten');
+        return;
+      }
+      
+      // Scale corners from original image coordinates to canvas coordinates
+      const scaleX = sourceCanvas.width / sourceImage.width;
+      const scaleY = sourceCanvas.height / sourceImage.height;
+      
+      corners[0] = { x: detectedCorners[0][0] * scaleX, y: detectedCorners[0][1] * scaleY };
+      corners[1] = { x: detectedCorners[1][0] * scaleX, y: detectedCorners[1][1] * scaleY };
+      corners[2] = { x: detectedCorners[2][0] * scaleX, y: detectedCorners[2][1] * scaleY };
+      corners[3] = { x: detectedCorners[3][0] * scaleX, y: detectedCorners[3][1] * scaleY };
+      
+      currentCornerIndex = 0;
+      drawCorners();
+      updatePreview();
+    }
+
+    // AI Corner Detection using Replicate API
+    async function detectCornersWithAI() {
+      const btn = document.getElementById('aiCornersBtn');
+      const prevText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'KI erkennt Ecken...';
+      
+      try {
+        const formData = new FormData();
+        formData.append('image_path', `admin/images/${paintingBase}_original.jpg`);
+        formData.append('action', 'detect_corners'); // Use new corner detection method
+        
+        const response = await fetch('corners.php', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          throw new Error('HTTP ' + response.status);
+        }
+        
+        const data = await response.json();
+        if (!data.ok) {
+          throw new Error(data.error || 'Unbekannter Fehler');
+        }
+        
+        if (data.original_corners && Array.isArray(data.original_corners) && data.original_corners.length === 4) {
+          applyCornersToCanvas(data.original_corners);
+          alert('Ecken erfolgreich erkannt!');
+        } else {
+          alert('Keine Ecken in der Antwort gefunden. Die KI-Verarbeitung war erfolgreich, aber keine Ecken wurden erkannt.');
+        }
+      } catch (error) {
+        alert('Fehler bei KI-Erkennung: ' + error.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prevText;
+      }
+    }
+
+   
+
     document.getElementById('resetBtn').addEventListener('click', () => {
       corners[0] = { x: 0, y: 0 };
       corners[1] = { x: sourceCanvas.width, y: 0 };
@@ -784,6 +848,8 @@
       updatePreview();
     });
 
+    document.getElementById('aiCornersBtn').addEventListener('click', detectCornersWithAI);
+   
     document.getElementById('saveBtn').addEventListener('click', async () => {
       const btn = document.getElementById('saveBtn');
       btn.disabled = true;

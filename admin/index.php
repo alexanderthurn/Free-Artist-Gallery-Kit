@@ -1,5 +1,5 @@
 <?php
 // Redirect to index.html if accessed via index.php
-header('Location: index.html');
+header('Location: /admin/index.html');
 exit;
 

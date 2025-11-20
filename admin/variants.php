@@ -520,6 +520,34 @@ PROMPT;
   $thumbPath = generate_thumbnail_path($targetPath);
   generate_thumbnail($targetPath, $thumbPath, 512, 1024);
 
+  // Update JSON metadata to track this variant as active
+  $jsonFile = find_json_file($imageBaseName, $imagesDir);
+  if ($jsonFile) {
+    $metaPath = $imagesDir . '/' . $jsonFile;
+    // Load existing metadata
+    $meta = [];
+    if (is_file($metaPath)) {
+      $metaContent = @file_get_contents($metaPath);
+      if ($metaContent !== false) {
+        $decoded = json_decode($metaContent, true);
+        if (is_array($decoded)) {
+          $meta = $decoded;
+        }
+      }
+    }
+    
+    // Add variant to active variants list
+    if (!isset($meta['active_variants']) || !is_array($meta['active_variants'])) {
+      $meta['active_variants'] = [];
+    }
+    if (!in_array($variantName, $meta['active_variants'], true)) {
+      $meta['active_variants'][] = $variantName;
+    }
+    
+    // Update JSON thread-safely
+    update_json_file($metaPath, ['active_variants' => $meta['active_variants']], false);
+  }
+
   // Check if this image is already in gallery and update it
   $galleryDir = dirname(__DIR__) . '/img/gallery/';
   $galleryFilename = find_gallery_entry($imageBaseName, $galleryDir);
@@ -537,7 +565,7 @@ PROMPT;
         update_gallery_entry($imageBaseName, $meta, $imagesDir, $galleryDir);
         
         // Trigger async image optimization with force to ensure thumbnails are regenerated
-        async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
+        // Variant regeneration triggers removed - handled by background task processor
       }
     }
   }
@@ -717,6 +745,34 @@ PROMPT;
       $thumbPath = generate_thumbnail_path($variant['target_path']);
       generate_thumbnail($variant['target_path'], $thumbPath, 512, 1024);
       
+      // Update JSON metadata to track this variant as active
+      $jsonFile = find_json_file($imageBaseName, $imagesDir);
+      if ($jsonFile) {
+        $metaPath = $imagesDir . '/' . $jsonFile;
+        // Load existing metadata
+        $meta = [];
+        if (is_file($metaPath)) {
+          $metaContent = @file_get_contents($metaPath);
+          if ($metaContent !== false) {
+            $decoded = json_decode($metaContent, true);
+            if (is_array($decoded)) {
+              $meta = $decoded;
+            }
+          }
+        }
+        
+        // Add variant to active variants list
+        if (!isset($meta['active_variants']) || !is_array($meta['active_variants'])) {
+          $meta['active_variants'] = [];
+        }
+        if (!in_array($variant['variant_name'], $meta['active_variants'], true)) {
+          $meta['active_variants'][] = $variant['variant_name'];
+        }
+        
+        // Update JSON thread-safely
+        update_json_file($metaPath, ['active_variants' => $meta['active_variants']], false);
+      }
+      
       $regenerated++;
       
     } catch (Exception $e) {
@@ -740,7 +796,7 @@ PROMPT;
         update_gallery_entry($imageBaseName, $meta, $imagesDir, $galleryDir);
         
         // Trigger async image optimization with force to ensure thumbnails are regenerated
-        async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
+        // Variant regeneration triggers removed - handled by background task processor
       }
     }
   }

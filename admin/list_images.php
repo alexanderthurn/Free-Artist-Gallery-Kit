@@ -96,6 +96,45 @@ if (is_dir($galleryDir)) {
 foreach ($groups as $key => &$g) {
     // Convert to indexed array
     $variants = array_values($g['variants']);
+    
+    // Add variants from active_variants that don't have files yet (pending generation)
+    $metaFile = null;
+    $original = null;
+    foreach ($variants as $v) {
+        if ($v['variant'] === 'original') { 
+            $original = $v; 
+            $metaFile = $dir.'/'.$v['name'].'.json';
+            break; 
+        }
+    }
+    if (!$metaFile && !empty($variants)) {
+        $metaFile = $dir.'/'.$variants[0]['name'].'.json';
+    }
+    
+    if ($metaFile && is_file($metaFile)) {
+        $raw = file_get_contents($metaFile);
+        $decoded = json_decode($raw ?: '', true);
+        if (is_array($decoded) && isset($decoded['active_variants']) && is_array($decoded['active_variants'])) {
+            foreach ($decoded['active_variants'] as $variantName) {
+                // Check if variant file already exists
+                $variantFile = $key . '_variant_' . $variantName . '.jpg';
+                $variantPath = $dir . '/' . $variantFile;
+                $variantExists = is_file($variantPath);
+                
+                if (!$variantExists) {
+                    // Add as pending variant (no file yet)
+                    $variants[] = [
+                        'name' => $variantFile,
+                        'variant' => 'variant_' . $variantName,
+                        'url' => 'images/'.rawurlencode($variantFile),
+                        'mtime' => 0,
+                        'pending' => true, // Mark as pending generation
+                    ];
+                }
+            }
+        }
+    }
+    
     // Order by predefined list first, then others alphabetically by variant name
     usort($variants, function ($a, $b) use ($VARIANT_ORDER) {
         $ia = array_search($a['variant'], $VARIANT_ORDER, true);
@@ -107,11 +146,14 @@ foreach ($groups as $key => &$g) {
     });
     $g['variants'] = $variants;
     // Meta from original if available, else first
-    $original = null;
-    foreach ($variants as $v) {
-        if ($v['variant'] === 'original') { $original = $v; break; }
+    if (!$original) {
+        foreach ($variants as $v) {
+            if ($v['variant'] === 'original') { $original = $v; break; }
+        }
     }
-    $metaFile = $original ? ($dir.'/'.$original['name'].'.json') : ($dir.'/'.$variants[0]['name'].'.json');
+    if (!$metaFile) {
+        $metaFile = $original ? ($dir.'/'.$original['name'].'.json') : ($dir.'/'.$variants[0]['name'].'.json');
+    }
     if (is_file($metaFile)) {
         $raw = file_get_contents($metaFile);
         $decoded = json_decode($raw ?: '', true);

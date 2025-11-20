@@ -4,6 +4,10 @@
 
 declare(strict_types=1);
 
+// Suppress warnings/notices that might break JSON output
+error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED);
+ini_set('display_errors', '0');
+
 require_once __DIR__.'/utils.php';
 
 function ensure_dir(string $path): void {
@@ -250,13 +254,48 @@ for ($i = 0; $i < $count; $i++) {
         // Use thread-safe update function to preserve all existing data
         update_json_file($jsonPath, $metaData, false);
     } else {
-        // For AI uploads, also save dimensions if JSON exists
+        // For AI uploads, set AI generation flag and save dimensions
         $baseName = extract_base_name(basename($target));
         $jsonPath = $target . '.json';
-        if (is_file($jsonPath) && $imageDimensions) {
-            // Use thread-safe update function to preserve all existing data
-            update_json_file($jsonPath, ['image_dimensions' => $imageDimensions], false);
+        
+        // Create JSON file if it doesn't exist
+        $metaData = [];
+        if (is_file($jsonPath)) {
+            $existingContent = @file_get_contents($jsonPath);
+            if ($existingContent !== false) {
+                $decoded = json_decode($existingContent, true);
+                if (is_array($decoded)) {
+                    $metaData = $decoded;
+                }
+            }
         }
+        
+        // Set default values if not present
+        if (!isset($metaData['title']) || $metaData['title'] === '') {
+            $paintingNumber = $existingPaintingCount + $uploaded + 1;
+            $metaData['title'] = '#' . $paintingNumber;
+        }
+        if (!isset($metaData['description'])) $metaData['description'] = '';
+        if (!isset($metaData['width'])) $metaData['width'] = '';
+        if (!isset($metaData['height'])) $metaData['height'] = '';
+        if (!isset($metaData['tags'])) $metaData['tags'] = '';
+        if (!isset($metaData['date'])) $metaData['date'] = '';
+        if (!isset($metaData['sold'])) $metaData['sold'] = false;
+        if (!isset($metaData['frame_type'])) $metaData['frame_type'] = 'white';
+        if (!isset($metaData['original_filename'])) $metaData['original_filename'] = $baseName;
+        
+        // Save image dimensions
+        if ($imageDimensions) {
+            $metaData['image_dimensions'] = $imageDimensions;
+        }
+        
+        // Set AI generation status to 'wanted' (both corners and form)
+        $metaData['ai_corners_status'] = 'wanted';
+        $metaData['ai_form_status'] = 'wanted';
+        
+        // Save JSON file (create if doesn't exist)
+        $jsonContent = json_encode($metaData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        file_put_contents($jsonPath, $jsonContent, LOCK_EX);
     }
 
     $uploaded++;
@@ -309,7 +348,8 @@ $query = http_build_query([
     'resized' => count($resizedImages),
 ]);
 
-header('Location: index.html?'.$query);
+// Use absolute path to avoid double admin/admin issue
+header('Location: /admin/index.html?'.$query);
 exit;
 
 

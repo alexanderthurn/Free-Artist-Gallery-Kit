@@ -416,7 +416,8 @@ function update_gallery_entry(string $base, array $meta, string $imagesDir, stri
         }
         
         // Find variant files (those with _variant_ in the name)
-        if (strpos($fileStem, $base.'_variant_') === 0) {
+        // Skip thumbnail files (those with _thumb in the name)
+        if (strpos($fileStem, $base.'_variant_') === 0 && strpos($fileStem, '_thumb') === false) {
             $variantFiles[] = $file;
         }
     }
@@ -849,6 +850,175 @@ function update_json_file(string $jsonPath, array $updates, bool $mergeNested = 
     // Save with file lock
     $jsonContent = json_encode($existingData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     return file_put_contents($jsonPath, $jsonContent, LOCK_EX) !== false;
+}
+
+/**
+ * Check if a task is currently in progress and not stale
+ * 
+ * @param array $meta JSON metadata array
+ * @param string $taskType 'variant_regeneration' or 'ai_generation'
+ * @param int $maxMinutes Maximum minutes before task is considered stale (default 10)
+ * @return bool True if task is in progress and not stale
+ */
+function is_task_in_progress(array $meta, string $taskType, int $maxMinutes = 10): bool {
+    if ($taskType === 'variant_regeneration') {
+        $status = $meta['variant_regeneration_status'] ?? null;
+        $startedAt = $meta['variant_regeneration_started_at'] ?? null;
+        
+        if ($status !== 'in_progress') {
+            return false;
+        }
+        
+        if ($startedAt === null) {
+            return false; // No start time, consider stale
+        }
+        
+        $startTime = strtotime($startedAt);
+        if ($startTime === false) {
+            return false; // Invalid timestamp
+        }
+        
+        $elapsedMinutes = (time() - $startTime) / 60;
+        return $elapsedMinutes < $maxMinutes;
+    }
+    
+    if ($taskType === 'ai_corners') {
+        $status = $meta['ai_corners_status'] ?? null;
+        $startedAt = $meta['ai_corners_started_at'] ?? null;
+        
+        if ($status !== 'in_progress') {
+            return false;
+        }
+        
+        if ($startedAt === null) {
+            return false; // No start time, consider stale
+        }
+        
+        $startTime = strtotime($startedAt);
+        if ($startTime === false) {
+            return false; // Invalid timestamp
+        }
+        
+        $elapsedMinutes = (time() - $startTime) / 60;
+        return $elapsedMinutes < $maxMinutes;
+    }
+    
+    if ($taskType === 'ai_form') {
+        $status = $meta['ai_form_status'] ?? null;
+        $startedAt = $meta['ai_form_started_at'] ?? null;
+        
+        if ($status !== 'in_progress') {
+            return false;
+        }
+        
+        if ($startedAt === null) {
+            return false; // No start time, consider stale
+        }
+        
+        $startTime = strtotime($startedAt);
+        if ($startTime === false) {
+            return false; // Invalid timestamp
+        }
+        
+        $elapsedMinutes = (time() - $startTime) / 60;
+        return $elapsedMinutes < $maxMinutes;
+    }
+    
+    return false;
+}
+
+/**
+ * Count pending tasks across all paintings
+ * 
+ * @param string $imagesDir Path to images directory
+ * @return array Counts of pending tasks ['variants' => int, 'ai' => int, 'gallery' => int]
+ */
+function get_pending_tasks_count(string $imagesDir): array {
+    $counts = ['variants' => 0, 'ai' => 0, 'gallery' => 0];
+    
+    if (!is_dir($imagesDir)) {
+        return $counts;
+    }
+    
+    $files = scandir($imagesDir) ?: [];
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') continue;
+        if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
+        
+        // Check if it's an _original.json file
+        $stem = pathinfo($file, PATHINFO_FILENAME);
+        if (!preg_match('/_original$/', $stem)) {
+            continue;
+        }
+        
+        $jsonPath = $imagesDir . '/' . $file;
+        $content = @file_get_contents($jsonPath);
+        if ($content === false) continue;
+        
+        $meta = json_decode($content, true);
+        if (!is_array($meta)) continue;
+        
+        // Check variant regeneration
+        $variantStatus = $meta['variant_regeneration_status'] ?? null;
+        if ($variantStatus === 'needed' || ($variantStatus === 'in_progress' && !is_task_in_progress($meta, 'variant_regeneration'))) {
+            $counts['variants']++;
+        }
+        
+        // Check AI generation (corners and form separately)
+        $cornersStatus = $meta['ai_corners_status'] ?? null;
+        $formStatus = $meta['ai_form_status'] ?? null;
+        
+        if ($cornersStatus === 'wanted' || 
+            ($cornersStatus === 'in_progress' && !is_task_in_progress($meta, 'ai_corners'))) {
+            $counts['ai']++;
+        }
+        if ($formStatus === 'wanted' || 
+            ($formStatus === 'in_progress' && !is_task_in_progress($meta, 'ai_form'))) {
+            $counts['ai']++;
+        }
+        
+        // Check gallery publishing (simplified - would need more complex logic)
+        // This is a placeholder - actual check would compare file times
+        if (isset($meta['live']) && $meta['live'] === true) {
+            $counts['gallery']++;
+        }
+    }
+    
+    return $counts;
+}
+
+/**
+ * Update task status in JSON file thread-safely
+ * 
+ * @param string $jsonPath Full path to JSON file
+ * @param string $taskType 'variant_regeneration' or 'ai_generation'
+ * @param string $status New status value
+ * @param string|null $startedAt ISO timestamp (null to use current time)
+ * @return bool True on success
+ */
+function update_task_status(string $jsonPath, string $taskType, string $status, ?string $startedAt = null): bool {
+    $updates = [];
+    
+    if ($taskType === 'variant_regeneration') {
+        $updates['variant_regeneration_status'] = $status;
+        if ($status === 'in_progress') {
+            $updates['variant_regeneration_started_at'] = $startedAt ?? date('c');
+        } elseif ($status === 'completed') {
+            $updates['variant_regeneration_last_completed'] = date('c');
+            // Clear started_at when completed
+            $updates['variant_regeneration_started_at'] = null;
+        }
+    } elseif ($taskType === 'ai_generation') {
+        $updates['ai_generation_status'] = $status;
+        if (in_array($status, ['corners_in_progress', 'form_in_progress'], true)) {
+            $updates['ai_generation_started_at'] = $startedAt ?? date('c');
+        } elseif ($status === 'completed') {
+            // Clear started_at when completed
+            $updates['ai_generation_started_at'] = null;
+        }
+    }
+    
+    return update_json_file($jsonPath, $updates, false);
 }
 
 /**

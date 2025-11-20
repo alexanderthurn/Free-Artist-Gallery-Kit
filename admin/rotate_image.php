@@ -115,7 +115,8 @@ foreach ($files as $file) {
 }
 
 // Trigger optimization to update gallery with rotated image and regenerated thumbnails
-async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
+// Optimization triggers removed - handled by background task processor
+// Thumbnail regeneration kept (immediate, needed for UI)
 
 echo json_encode([
     'ok' => true,

@@ -94,6 +94,9 @@ error_log('AI Fill Form: Using image: ' . $finalPath);
 error_log('AI Fill Form: Image filename: ' . $originalImage);
 error_log('AI Fill Form: JSON path: ' . $jsonPath);
 
+// Update status to in_progress
+update_task_status($jsonPath, 'ai_form', 'in_progress');
+
 try {
     $token = load_replicate_token();
     
@@ -533,6 +536,9 @@ PROMPT;
         
         update_json_file($jsonPath, $updates, false);
         
+        // Update status to completed
+        update_task_status($jsonPath, 'ai_form', 'completed');
+        
         echo json_encode([
             'ok' => true,
             'title' => trim($jsonMatch['title'] ?? ''),
@@ -644,6 +650,9 @@ PROMPT;
         
         update_json_file($jsonPath, $updates, false);
         
+        // Update status to completed
+        update_task_status($jsonPath, 'ai_form', 'completed');
+        
         echo json_encode([
             'ok' => true,
             'title' => $title,
@@ -656,6 +665,10 @@ PROMPT;
     }
     
 } catch (Throwable $e) {
+    // Reset status to wanted for retry
+    if (isset($jsonPath) && is_file($jsonPath)) {
+        update_task_status($jsonPath, 'ai_form', 'wanted');
+    }
     http_response_code(500);
     echo json_encode([
         'ok' => false,

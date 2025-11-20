@@ -41,6 +41,8 @@
     .draft-badge { position: absolute; top: 20px; left: 20px; background: #ffc107; color: #000; padding: 8px 16px; border-radius: 12px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; z-index: 100; }
     .draft-badge.clickable { cursor: pointer; transition: all 0.2s ease; }
     .draft-badge.clickable:hover { background: #e0a800; transform: scale(1.05); }
+    .ai-pending-badge { position: absolute; top: 8px; left: 8px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 14px; font-weight: 600; z-index: 110; box-shadow: 0 4px 8px rgba(102, 126, 234, 0.4); display: flex; align-items: center; gap: 6px; letter-spacing: 0.3px; }
+    .variant-pending-badge { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 6px 10px; border-radius: 8px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; box-shadow: 0 2px 4px rgba(102, 126, 234, 0.3); }
     .main-image { width: 100%; max-width: 300px; border-radius: 0; background: #fafafa; position: relative; }
     .main-image.clickable { cursor: pointer; transition: opacity 0.2s ease; }
     .main-image.clickable:hover { opacity: 0.9; }
@@ -471,13 +473,31 @@
       const badgeClickHandler = `handleBadgeClick('${escapeHtml(originalVariant.name)}', ${g.in_gallery ? 'true' : 'false'})`;
       const showSegmentedButton = finalVariant ? 'show-segmented-button' : '';
       const frameType = meta.frame_type || 'white';
+      
+      // Check AI generation status (corners and form separately)
+      const cornersStatus = meta.ai_corners_status || null;
+      const formStatus = meta.ai_form_status || null;
+      const hasPendingAI = (cornersStatus && ['wanted', 'in_progress'].includes(cornersStatus)) || 
+                           (formStatus && ['wanted', 'in_progress'].includes(formStatus));
+      
+      const aiStatusBadge = hasPendingAI 
+        ? `<div class="ai-pending-badge" title="KI-Verarbeitung ausstehend - wird im Hintergrund verarbeitet">
+            <span style="font-size: 16px;">⭐</span> KI ausstehend
+          </div>`
+        : '';
+      
       row.innerHTML = `
         <div class="image-container">
-          <div class="main-image-wrapper ${showSegmentedButton}">
+          <div class="main-image-wrapper ${showSegmentedButton}" style="position: relative;">
             ${g.in_gallery ? `<div class="live-badge clickable" onclick="event.stopPropagation(); event.preventDefault(); ${badgeClickHandler}" title="Zurück auf Entwurf">Live</div>` : `<div class="draft-badge clickable" onclick="event.stopPropagation(); event.preventDefault(); ${badgeClickHandler}" title="Live schalten">Entwurf</div>`}
-            <div class="admin-frame-preview frame-${frameType}" id="frame-preview-${g.base}">
+            <div class="admin-frame-preview frame-${frameType}" id="frame-preview-${g.base}" style="position: relative;">
+              ${hasPendingAI ? `<div class="ai-pending-badge" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; z-index: 120;" title="KI-Verarbeitung ausstehend - wird im Hintergrund verarbeitet">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 12px 20px; border-radius: 12px; font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5);">
+                  <span style="font-size: 20px;">⭐</span> KI ausstehend
+                </div>
+              </div>` : ''}
               ${finalVariant ? `
-                <img class="${imageClass}" id="main-img-${g.base}" loading="lazy" src="${getThumbnailUrl(finalVariant.url)}${cacheBuster}" alt="${finalVariant.name}" ${imageClickHandler} data-variant="final">
+                <img class="${imageClass}" id="main-img-${g.base}" loading="lazy" src="${getThumbnailUrl(finalVariant.url)}${cacheBuster}" alt="${finalVariant.name}" ${imageClickHandler} data-variant="final" style="${hasPendingAI ? 'opacity: 0.3;' : ''}">
               ` : '<div class="main-image" style="aspect-ratio: 1/1; display: flex; align-items: center; justify-content: center; color: #999;">Kein Final-Bild</div>'}
             </div>
             ${finalVariant ? `
@@ -496,6 +516,30 @@
           ${allVariants.length > 0 ? `
             <div class="variant-thumbs" id="thumbs-${g.base}">
               ${allVariants.map((v) => {
+                // Check if variant is pending (no file yet)
+                const isPending = v.pending === true;
+                
+                // Don't show pending variants as images, show as badge that fills the area
+                if (isPending) {
+                  // Extract variant name from variant type (e.g., "variant_kommode" -> "kommode")
+                  const variantName = v.variant ? v.variant.replace(/^variant_/, '') : v.name.replace(/^.*_variant_/, '').replace(/\.jpg$/i, '');
+                  return `
+                  <div class="variant-thumb-wrapper" style="position: relative;">
+                    <div style="width: 80px; height: 80px; border-radius: 6px; position: relative; overflow: hidden; box-sizing: border-box;">
+                      <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4px; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);">
+                        <span style="font-size: 16px; color: #fff;">⭐</span>
+                        <span style="font-size: 10px; color: #fff; font-weight: 600; text-align: center; line-height: 1.2;">${variantName}</span>
+                      </div>
+                    </div>
+                    ${v.variant && v.variant.startsWith('variant_') ? `
+                      <button class="variant-thumb-delete" 
+                              onclick="event.stopPropagation(); deleteImageVariant('${escapeHtml(v.name)}', '${escapeHtml(g.base)}', this)"
+                              title="Löschen">×</button>
+                    ` : ''}
+                  </div>
+                `;
+                }
+                
                 // Generate thumbnail URL implicitly from image URL
                 const thumbUrl = getThumbnailUrl(v.url);
                 return `
@@ -933,68 +977,40 @@
       const prevOpacity = thumbElement.style.opacity;
       thumbElement.style.opacity = '0.5';
       thumbElement.style.cursor = 'wait';
-      showToast('KI generiert Variante...', 'info', 300000); // 5 minutes max
-
+      
+      // Extract variant name from filename (remove .jpg extension)
+      const variantName = variantFilename.replace(/\.(jpg|jpeg)$/i, '');
+      
       try {
-        // Get width and height from the form fields
-        const row = document.getElementById(`painting-${imageBaseName}`);
-        const width = row ? (row.querySelector('input[name="width"]')?.value || '').trim() : '';
-        const height = row ? (row.querySelector('input[name="height"]')?.value || '').trim() : '';
-        
+        // Add variant to queue (only updates JSON, doesn't create file yet)
         const body = new FormData();
-        body.set('action', 'copy_to_image');
-        body.set('variant_filename', variantFilename);
         body.set('image_base_name', imageBaseName);
-        if (width) body.set('width', width);
-        if (height) body.set('height', height);
+        body.set('variant_name', variantName);
 
-        const res = await fetch('variants.php', { method: 'POST', body });
+        const res = await fetch('/admin/add_variant_to_queue.php', { method: 'POST', body });
         if (!res.ok) {
           const msg = await res.text();
-          showToast('Fehler beim Generieren: ' + msg, 'error');
+          showToast('Fehler beim Hinzufügen: ' + msg, 'error');
           return;
         }
 
         const data = await res.json();
         if (!data.ok) {
-          showToast('Fehler beim Generieren: ' + (data.error || 'Unknown'), 'error');
+          showToast('Fehler beim Hinzufügen: ' + (data.error || 'Unknown'), 'error');
           return;
         }
 
-        // If image is live, copy to gallery
-        if (isLive) {
-          showToast('Variante generiert. Aktualisiere Live-Version...', 'info');
-          try {
-            const copyBody = new FormData();
-            copyBody.set('image', originalImageName);
-            const copyRes = await fetch('copy_to_gallery.php', { method: 'POST', body: copyBody });
-            if (!copyRes.ok) {
-              const copyMsg = await copyRes.text();
-              showToast('Variante generiert, aber Live-Aktualisierung fehlgeschlagen: ' + copyMsg, 'error');
-              // Still update the UI even if copy failed
-              await updateImageRow(imageBaseName);
-              return;
-            }
-            const copyData = await copyRes.json().catch(() => ({}));
-            if (!copyData.ok) {
-              showToast('Variante generiert, aber Live-Aktualisierung fehlgeschlagen: ' + (copyData.error || 'Unknown'), 'error');
-              // Still update the UI even if copy failed
-              await updateImageRow(imageBaseName);
-              return;
-            }
-            showToast('Variante erfolgreich generiert und Live-Version aktualisiert', 'success');
-          } catch (copyError) {
-            showToast('Variante generiert, aber Live-Aktualisierung fehlgeschlagen: ' + copyError.message, 'error');
-            // Still update the UI even if copy failed
-            await updateImageRow(imageBaseName);
-            return;
-          }
+        if (data.already_exists) {
+          showToast('Variante bereits in Warteschlange oder vorhanden', 'info');
         } else {
-          showToast('Variante erfolgreich generiert', 'success');
+          showToast('Variante zur Warteschlange hinzugefügt. Wird im Hintergrund generiert...', 'success');
         }
 
-        // Update only the affected image row instead of full page reload
+        // Update only the affected image row to show the variant in the list
         await updateImageRow(imageBaseName);
+        
+        // Refresh pending tasks count
+        updatePendingTasksCount();
       } catch (error) {
         showToast('Fehler: ' + error.message, 'error');
       } finally {
@@ -1298,24 +1314,44 @@
                 progressBar.style.width = '100%';
                 // Check if response is JSON (AI upload) or redirect (regular upload)
                 const contentType = xhr.getResponseHeader('Content-Type') || '';
-                if (contentType.includes('application/json')) {
+                if (contentType.includes('application/json') || isAIUpload) {
                   try {
-                    const data = JSON.parse(xhr.responseText);
-                    resolve(data);
+                    // Try to extract JSON from response (in case PHP errors were output first)
+                    let responseText = xhr.responseText.trim();
+                    // Find JSON object in response (handle PHP warnings before JSON)
+                    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                      const data = JSON.parse(jsonMatch[0]);
+                      resolve(data);
+                    } else {
+                      // No JSON found, might be an error
+                      reject(new Error('Invalid JSON response: ' + responseText.substring(0, 200)));
+                    }
                   } catch (e) {
-                    resolve({ ok: true, responseText: xhr.responseText });
+                    reject(new Error('JSON parse error: ' + e.message + '. Response: ' + xhr.responseText.substring(0, 200)));
                   }
                 } else {
                   // Regular upload - redirect response
                   resolve({ ok: true, redirect: true });
                 }
               } else {
-                reject(new Error(`Upload failed: ${xhr.status}`));
+                // Try to parse error response as JSON
+                try {
+                  const jsonMatch = xhr.responseText.match(/\{[\s\S]*\}/);
+                  if (jsonMatch) {
+                    const errorData = JSON.parse(jsonMatch[0]);
+                    reject(new Error(errorData.error || `Upload failed: ${xhr.status}`));
+                  } else {
+                    reject(new Error(`Upload failed: ${xhr.status}. Response: ${xhr.responseText.substring(0, 200)}`));
+                  }
+                } catch (e) {
+                  reject(new Error(`Upload failed: ${xhr.status}`));
+                }
               }
             };
             xhr.onerror = () => {
               clearInterval(timeInterval);
-              reject(new Error('Upload failed'));
+              reject(new Error('Upload failed - network error'));
             };
             xhr.open('POST', 'upload.php');
             xhr.send(fd);
@@ -1349,10 +1385,15 @@
             }, 2000);
             refresh();
           }
-        } catch (error) {
-          showToast('Fehler beim Hochladen: ' + error.message, 'error');
-          progressContainer.style.display = 'none';
-        }
+          } catch (error) {
+            console.error('Upload error:', error);
+            showToast('Fehler beim Hochladen: ' + error.message, 'error');
+            progressContainer.style.display = 'none';
+            // Still refresh to show uploaded images even if workflow failed
+            if (isAIUpload) {
+              refresh();
+            }
+          }
       }
       
       async function processAIImageWorkflow(uploadedImages, startTime) {
@@ -1391,81 +1432,15 @@
             progressBar.style.width = imageProgress + '%';
             statusText.textContent = `Bild ${i + 1}/${uploadedImages.length}: KI Bild freistellen lassen...`;
             
-            // Step 2: KI Bild freistellen lassen
-            step2.textContent = `🔄 KI Bild freistellen lassen (${i + 1}/${uploadedImages.length})...`;
+            // Step 2: AI flags already set by upload.php (ai_generation_status: 'wanted')
+            // Just confirm - no need to wait for processing
+            step2.textContent = `✅ KI Verarbeitung geplant (${i + 1}/${uploadedImages.length}) - wird im Hintergrund verarbeitet`;
             step2.style.opacity = '1';
-            progressBar.style.width = (imageProgress + progressPerStep) + '%';
-            
-            const cornersRes = await fetch('corners.php', {
-              method: 'POST',
-              body: (() => {
-                const fd = new FormData();
-                fd.append('image_path', 'admin/images/' + imageName);
-                fd.append('color', '#ffffff');
-                return fd;
-              })()
-            });
-            
-            if (!cornersRes.ok) {
-              throw new Error('KI Bild freistellen fehlgeschlagen');
-            }
-            
-            const cornersData = await cornersRes.json();
-            if (!cornersData.ok) {
-              throw new Error('KI Bild freistellen fehlgeschlagen: ' + (cornersData.error || 'Unknown'));
-            }
-            
-            step2.textContent = `✅ KI Bild freistellen abgeschlossen (${i + 1}/${uploadedImages.length})`;
             progressBar.style.width = (imageProgress + progressPerStep * 2) + '%';
             
-            // Step 3: KI Formular ausfüllen lassen
-            step3.textContent = `🔄 KI Formular ausfüllen lassen (${i + 1}/${uploadedImages.length})...`;
-            step3.style.opacity = '1';
-            statusText.textContent = `Bild ${i + 1}/${uploadedImages.length}: KI Formular ausfüllen lassen...`;
-            progressBar.style.width = (imageProgress + progressPerStep * 2.5) + '%';
-            
-            const fillFormRes = await fetch('ai_fill_form.php', {
-              method: 'POST',
-              body: (() => {
-                const fd = new FormData();
-                fd.append('image', imageName);
-                return fd;
-              })()
-            });
-            
-            if (!fillFormRes.ok) {
-              throw new Error('KI Formular ausfüllen fehlgeschlagen');
-            }
-            
-            const fillFormData = await fillFormRes.json();
-            if (!fillFormData.ok) {
-              throw new Error('KI Formular ausfüllen fehlgeschlagen: ' + (fillFormData.error || 'Unknown'));
-            }
-            
-            // Save the form data
-            const saveMetaRes = await fetch('save_meta.php', {
-              method: 'POST',
-              body: (() => {
-                const fd = new FormData();
-                fd.append('image', imageName);
-                if (fillFormData.title) fd.append('title', fillFormData.title);
-                if (fillFormData.description) fd.append('description', fillFormData.description);
-                if (fillFormData.width) fd.append('width', fillFormData.width);
-                if (fillFormData.height) fd.append('height', fillFormData.height);
-                if (fillFormData.tags) fd.append('tags', fillFormData.tags);
-                if (fillFormData.date) fd.append('date', fillFormData.date);
-                fd.append('sold', '0');
-                fd.append('frame_type', 'white');
-                return fd;
-              })()
-            });
-            
-            if (saveMetaRes.ok) {
-              const saveMetaData = await saveMetaRes.json().catch(() => ({}));
-              // Form data saved (or will be saved)
-            }
-            
-            step3.textContent = `✅ KI Formular ausfüllen abgeschlossen (${i + 1}/${uploadedImages.length})`;
+            // Step 3: Skip form filling - it's already queued via ai_generation_status
+            step3.textContent = `⏭ KI Formular ausfüllen übersprungen (wird im Hintergrund verarbeitet) (${i + 1}/${uploadedImages.length})`;
+            step3.style.opacity = '0.7';
             progressBar.style.width = (imageProgress + progressPerStep * 3) + '%';
             
             // Step 4: Generate random variant
@@ -1488,29 +1463,30 @@
               // Pick a random variant
               const randomVariant = variantsData.variants[Math.floor(Math.random() * variantsData.variants.length)];
               
-              const variantRes = await fetch('variants.php', {
+              // Extract variant name from filename
+              const variantName = randomVariant.name.replace(/\.(jpg|jpeg)$/i, '');
+              
+              // Add variant to queue (only updates JSON, doesn't create file yet)
+              const variantRes = await fetch('/admin/add_variant_to_queue.php', {
                 method: 'POST',
                 body: (() => {
                   const fd = new FormData();
-                  fd.append('action', 'copy_to_image');
-                  fd.append('variant_filename', randomVariant.name);
                   fd.append('image_base_name', imageBase);
-                  if (fillFormData.width) fd.append('width', fillFormData.width);
-                  if (fillFormData.height) fd.append('height', fillFormData.height);
+                  fd.append('variant_name', variantName);
                   return fd;
                 })()
               });
               
               if (!variantRes.ok) {
-                throw new Error('KI Variante generieren fehlgeschlagen');
+                throw new Error('KI Variante zur Warteschlange hinzufügen fehlgeschlagen');
               }
               
               const variantData = await variantRes.json();
               if (!variantData.ok) {
-                throw new Error('KI Variante generieren fehlgeschlagen: ' + (variantData.error || 'Unknown'));
+                throw new Error('KI Variante zur Warteschlange hinzufügen fehlgeschlagen: ' + (variantData.error || 'Unknown'));
               }
               
-              step4.textContent = `✅ KI Variante generiert (${i + 1}/${uploadedImages.length})`;
+              step4.textContent = `✅ KI Variante zur Warteschlange hinzugefügt (${i + 1}/${uploadedImages.length}) - wird im Hintergrund generiert`;
             }
             
             progressBar.style.width = (imageProgress + progressPerImage) + '%';
@@ -1580,6 +1556,25 @@
           <div style="width: 100%; height: 8px; background: #e8e8e8; border-radius: 4px; overflow: hidden;">
             <div id="regularUploadProgressBar" style="height: 100%; background: #28a745; width: 0%; transition: width 0.3s ease;"></div>
           </div>
+        </div>
+      </div>
+      
+      <!-- Background Tasks Section -->
+      <div style="margin-bottom: 24px; padding: 16px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+        <h3 style="font-size: 14px; margin-bottom: 12px; color: #555;">
+          ⚙️ Background Tasks
+        </h3>
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+          <button type="button" id="triggerBackgroundTasks" onclick="triggerBackgroundTasks()" 
+                  style="padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;">
+            Background Tasks verarbeiten
+          </button>
+          <div id="backgroundTasksStatus" style="font-size: 12px; color: #666;">
+            <span id="pendingTasksCount">Lade...</span>
+          </div>
+        </div>
+        <div id="backgroundTasksProgress" style="display: none; margin-top: 12px; font-size: 11px; color: #888;">
+          <div id="backgroundTasksMessage"></div>
         </div>
       </div>
       
@@ -1925,80 +1920,30 @@
         const body = new FormData();
         body.set('image', imageOriginalName);
         
-        // Increase timeout for long-running requests (10 minutes)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes
-        
-        const res = await fetch('ai_fill_form.php', { 
+        // Just set the flag - don't wait for AI processing
+        const res = await fetch('/admin/set_ai_form_flag.php', { 
           method: 'POST', 
-          body,
-          signal: controller.signal
+          body
         });
-        
-        clearTimeout(timeoutId);
         
         if (!res.ok) {
           const msg = await res.text();
-          showToast('KI-Formularausfüllung fehlgeschlagen: ' + msg, 'error');
+          showToast('Flag setzen fehlgeschlagen: ' + msg, 'error');
           return;
         }
         const data = await res.json().catch(() => ({}));
         if (!data.ok) {
-          showToast('KI-Formularausfüllung fehlgeschlagen: ' + (data.error || 'Unknown'), 'error');
+          showToast('Flag setzen fehlgeschlagen: ' + (data.error || 'Unknown'), 'error');
           return;
         }
       
-        // Check for warning
-        if (data.warning) {
-          showToast(data.warning, 'error');
-          return;
-        }
+        showToast('KI-Formularausfüllung wurde zur Warteschlange hinzugefügt. Wird im Hintergrund verarbeitet.', 'success');
         
-        // Fill form fields with AI-generated data
-        let filled = false;
-        if (data.title) {
-          item.querySelector('input[name="title"]').value = data.title;
-          filled = true;
-        }
-        if (data.description) {
-          item.querySelector('textarea[name="description"]').value = data.description;
-          filled = true;
-        }
-        if (data.tags) {
-          item.querySelector('input[name="tags"]').value = data.tags;
-          filled = true;
-        }
-        if (data.date) {
-          item.querySelector('input[name="date"]').value = data.date;
-          filled = true;
-        }
-        if (data.width) {
-          item.querySelector('input[name="width"]').value = data.width;
-          filled = true;
-        }
-        if (data.height) {
-          item.querySelector('input[name="height"]').value = data.height;
-          filled = true;
-        }
+        // Refresh pending tasks count
+        updatePendingTasksCount();
         
-        if (filled) {
-          showToast('Formular erfolgreich von KI ausgefüllt', 'success');
-          // Automatically save the form using auto-save
-          // Trigger input events to activate auto-save
-          const fields = [
-            item.querySelector('input[name="title"]'),
-            item.querySelector('textarea[name="description"]'),
-            item.querySelector('input[name="width"]'),
-            item.querySelector('input[name="height"]'),
-            item.querySelector('input[name="tags"]'),
-            item.querySelector('input[name="date"]')
-          ].filter(f => f !== null);
-          fields.forEach(field => {
-            field.dispatchEvent(new Event('input', { bubbles: true }));
-          });
-        } else {
-          showToast('Keine Daten von KI erhalten', 'error');
-        }
+        // Don't fill form fields - they will be filled when background task completes
+        // The user can continue working
       } catch (error) {
         console.error('Error in fillFormWithAI:', error);
         if (error.name === 'AbortError') {
@@ -2233,6 +2178,78 @@
     } else {
       updateSiteDomainLink();
     }
+    // Background Tasks Functions
+    function triggerBackgroundTasks() {
+      const btn = document.getElementById('triggerBackgroundTasks');
+      const progressDiv = document.getElementById('backgroundTasksProgress');
+      const messageDiv = document.getElementById('backgroundTasksMessage');
+      
+      btn.disabled = true;
+      btn.textContent = 'Wird verarbeitet...';
+      progressDiv.style.display = 'block';
+      messageDiv.textContent = 'Starte Verarbeitung...';
+      
+      fetch('/admin/process_background_tasks.php', { 
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      })
+        .then(r => r.json())
+        .then(data => {
+          btn.disabled = false;
+          btn.textContent = 'Background Tasks verarbeiten';
+          
+          if (data.ok) {
+            const processed = data.processed?.length || 0;
+            const skipped = data.skipped?.length || 0;
+            const errors = data.errors?.length || 0;
+            
+            messageDiv.innerHTML = `
+              <strong>Abgeschlossen:</strong><br>
+              Verarbeitet: ${processed}<br>
+              Übersprungen: ${skipped}<br>
+              Fehler: ${errors}
+            `;
+            
+            // Refresh pending count
+            updatePendingTasksCount();
+          } else {
+            messageDiv.textContent = 'Fehler: ' + (data.error || 'Unbekannter Fehler');
+          }
+        })
+        .catch(err => {
+          btn.disabled = false;
+          btn.textContent = 'Background Tasks verarbeiten';
+          messageDiv.textContent = 'Fehler: ' + err.message;
+        });
+    }
+    
+    function updatePendingTasksCount() {
+      fetch('/admin/process_background_tasks.php?preview=1')
+        .then(r => r.json())
+        .then(data => {
+          if (data.ok && data.summary) {
+            const total = (data.summary.variants || 0) + (data.summary.ai || 0) + (data.summary.gallery || 0);
+            const countEl = document.getElementById('pendingTasksCount');
+            if (total > 0) {
+              countEl.textContent = `${total} ausstehende Aufgabe(n)`;
+              countEl.style.color = '#dc3545';
+            } else {
+              countEl.textContent = 'Keine ausstehenden Aufgaben';
+              countEl.style.color = '#28a745';
+            }
+          }
+        })
+        .catch(() => {
+          document.getElementById('pendingTasksCount').textContent = 'Status unbekannt';
+        });
+    }
+    
+    // Update pending count on page load
+    updatePendingTasksCount();
+    // Refresh every 30 seconds
+    setInterval(updatePendingTasksCount, 30000);
   </script>
 </body>
 </html>

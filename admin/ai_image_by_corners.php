@@ -43,13 +43,19 @@ try {
     $baseName = preg_replace('/_original\.(jpg|jpeg|png)$/i', '', basename($absPath));
     $imagesDir = dirname($absPath);
     
-    // Step 1: Call calculate_corners function directly
+    // Step 1: Update status to in_progress
+    $metaPath = $imagesDir . '/' . $baseName . '_original.jpg.json';
+    update_task_status($metaPath, 'ai_corners', 'in_progress');
+    
+    // Step 2: Call calculate_corners function directly
     require_once __DIR__ . '/ai_calc_corners.php';
     
     $offsetPercent = isset($_POST['offset']) ? (float)$_POST['offset'] : 1.0;
     $cornersData = calculate_corners($imagePath, $offsetPercent);
     
     if (!is_array($cornersData) || !$cornersData['ok'] || !isset($cornersData['corners'])) {
+        // Reset status to wanted for retry
+        update_task_status($metaPath, 'ai_corners', 'wanted');
         http_response_code(502);
         echo json_encode([
             'ok' => false,
@@ -240,33 +246,16 @@ try {
     // Save updated metadata thread-safely
     update_json_file($metaPath, $updates, false);
     
-    // Step 6: Check if this entry is in gallery and update it automatically
+    // Step 6: Update AI corners status to completed
+    update_task_status($metaPath, 'ai_corners', 'completed');
+    
+    // Step 7: Set variant regeneration flag (will be processed by background task processor)
+    update_json_file($metaPath, ['variant_regeneration_status' => 'needed'], false);
+    
+    // Check if image is in gallery
     $galleryDir = dirname(__DIR__) . '/img/gallery/';
-    $originalFilename = $meta['original_filename'] ?? $baseName;
-    $galleryFilename = find_gallery_entry($originalFilename, $galleryDir);
+    $galleryFilename = find_gallery_entry($baseName, $galleryDir);
     $inGallery = $galleryFilename !== null;
-    
-    // If in gallery, automatically update using unified function
-    if ($inGallery) {
-        update_gallery_entry($originalFilename, $meta, $imagesDir, $galleryDir);
-    }
-    
-    // Step 7: Regenerate all variants after final image is saved
-    require_once __DIR__ . '/variants.php';
-    try {
-        // Get dimensions from metadata if available
-        $width = isset($meta['width']) ? (string)$meta['width'] : null;
-        $height = isset($meta['height']) ? (string)$meta['height'] : null;
-        $regenerateResult = regenerateAllVariants($baseName, $width, $height);
-        // Log result but don't fail if variant regeneration fails
-        error_log("Variant regeneration for {$baseName}: " . json_encode($regenerateResult));
-    } catch (Exception $e) {
-        // Log error but don't fail the save action
-        error_log("Failed to regenerate variants for {$baseName}: " . $e->getMessage());
-    }
-    
-    // Step 8: Always trigger optimization to ensure gallery is updated
-    async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
     
     echo json_encode([
         'ok' => true,
@@ -283,6 +272,13 @@ try {
     ]);
     
 } catch (Throwable $e) {
+    // Reset status to wanted for retry
+    if (isset($baseName) && isset($imagesDir)) {
+        $metaPath = $imagesDir . '/' . $baseName . '_original.jpg.json';
+        if (is_file($metaPath)) {
+            update_task_status($metaPath, 'ai_corners', 'wanted');
+        }
+    }
     http_response_code(500);
     echo json_encode([
         'ok' => false,

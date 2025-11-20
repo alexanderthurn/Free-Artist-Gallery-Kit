@@ -85,19 +85,8 @@ try {
         $thumbPath = generate_thumbnail_path($finalPath);
         generate_thumbnail($finalPath, $thumbPath, 512, 1024);
         
-        // Regenerate all variants after final image is updated
-        require_once __DIR__ . '/variants.php';
-        try {
-            $regenerateResult = regenerateAllVariants($base);
-            // Log result but don't fail if variant regeneration fails
-            error_log("Variant regeneration for {$base}: " . json_encode($regenerateResult));
-        } catch (Exception $e) {
-            // Log error but don't fail the restore action
-            error_log("Failed to regenerate variants for {$base}: " . $e->getMessage());
-        }
-        
-        // Trigger optimization to copy everything to gallery with thumbnails
-        async_http_post('admin/optimize_images.php', ['action' => 'both', 'force' => '1']);
+        // Set variant regeneration flag (will be processed by background task processor)
+        update_json_file($metaPath, ['variant_regeneration_status' => 'needed'], false);
         
         echo json_encode(['ok' => true]);
         exit;

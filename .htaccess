@@ -1,8 +1,2 @@
-DirectoryIndex index.html index.php index.htm
-Options -Indexes
 
-# Redirect /admin to /admin/index.html (preserve query string)
-RewriteEngine On
-RewriteCond %{REQUEST_URI} ^/admin/?$
-RewriteRule ^admin/?$ /admin/index.html [R=301,L,QSA]
 

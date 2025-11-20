@@ -218,8 +218,6 @@ function process_variant_regeneration(string $baseName, string $jsonPath): array
  * Process AI corners generation
  */
 function process_ai_corners(string $baseName, string $jsonPath): array {
-    require_once __DIR__ . '/ai_calc_corners.php';
-    
     $imagesDir = __DIR__ . '/images';
     $originalImage = null;
     $files = scandir($imagesDir) ?: [];
@@ -241,45 +239,18 @@ function process_ai_corners(string $baseName, string $jsonPath): array {
     update_task_status($jsonPath, 'ai_corners', 'in_progress');
     
     try {
-        // Call ai_image_by_corners logic
-        // We need to call it via HTTP or extract the logic
-        // For now, let's use HTTP POST to the existing endpoint
+        // Call function directly instead of HTTP
+        require_once __DIR__ . '/ai_image_by_corners.php';
         $imagePath = 'admin/images/' . basename($originalImage);
+        $result = process_ai_image_by_corners($imagePath, 1.0);
         
-        // Use curl to call the endpoint
-        $ch = curl_init();
-        $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $url = $scheme . '://' . $host . '/admin/ai_image_by_corners.php';
-        
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query(['image_path' => $imagePath]),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 300,
-            CURLOPT_FOLLOWLOCATION => true
-        ]);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode !== 200 || $response === false) {
-            update_task_status($jsonPath, 'ai_corners', 'wanted'); // Retry
-            return ['ok' => false, 'error' => 'HTTP request failed', 'code' => $httpCode];
-        }
-        
-        $result = json_decode($response, true);
-        if (!is_array($result) || !($result['ok'] ?? false)) {
-            update_task_status($jsonPath, 'ai_corners', 'wanted'); // Retry
+        if ($result['ok']) {
+            // Status is already updated to completed in process_ai_image_by_corners
+            return ['ok' => true, 'result' => $result];
+        } else {
+            // Status is already updated to wanted in process_ai_image_by_corners
             return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
         }
-        
-        // Update status to completed
-        update_task_status($jsonPath, 'ai_corners', 'completed');
-        
-        return ['ok' => true, 'result' => $result];
     } catch (Throwable $e) {
         update_task_status($jsonPath, 'ai_corners', 'wanted'); // Retry
         return ['ok' => false, 'error' => $e->getMessage()];
@@ -323,40 +294,17 @@ function process_ai_form(string $baseName, string $jsonPath): array {
     update_task_status($jsonPath, 'ai_form', 'in_progress');
     
     try {
-        // Call ai_fill_form via HTTP
-        $ch = curl_init();
-        $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $url = $scheme . '://' . $host . '/admin/ai_fill_form.php';
+        // Call function directly instead of HTTP
+        require_once __DIR__ . '/ai_fill_form.php';
+        $result = process_ai_fill_form($imageFile);
         
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query(['image' => $imageFile]),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 300,
-            CURLOPT_FOLLOWLOCATION => true
-        ]);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode !== 200 || $response === false) {
-            update_task_status($jsonPath, 'ai_form', 'wanted'); // Retry
-            return ['ok' => false, 'error' => 'HTTP request failed', 'code' => $httpCode];
-        }
-        
-        $result = json_decode($response, true);
-        if (!is_array($result) || !($result['ok'] ?? false)) {
-            update_task_status($jsonPath, 'ai_form', 'wanted'); // Retry
+        if ($result['ok']) {
+            // Status is already updated to completed in process_ai_fill_form
+            return ['ok' => true, 'result' => $result];
+        } else {
+            // Status is already updated to wanted in process_ai_fill_form
             return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
         }
-        
-        // Update status to completed
-        update_task_status($jsonPath, 'ai_form', 'completed');
-        
-        return ['ok' => true, 'result' => $result];
     } catch (Throwable $e) {
         update_task_status($jsonPath, 'ai_form', 'wanted'); // Retry
         return ['ok' => false, 'error' => $e->getMessage()];
@@ -592,32 +540,10 @@ function cleanup_orphaned_variants(string $baseName, string $jsonPath, string $i
  * Process gallery publishing (use existing optimize_images logic)
  */
 function process_gallery_publishing(string $baseName, string $jsonPath): array {
-    // Use existing optimize_images.php logic
-    // This is handled by optimize_images.php which checks file times
-    // We just need to trigger it, but we'll do it via the existing endpoint
-    
     try {
-        $ch = curl_init();
-        $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $url = $scheme . '://' . $host . '/admin/optimize_images.php';
-        
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => http_build_query(['action' => 'both']),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 300,
-            CURLOPT_FOLLOWLOCATION => true
-        ]);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode !== 200 || $response === false) {
-            return ['ok' => false, 'error' => 'HTTP request failed', 'code' => $httpCode];
-        }
+        // Call function directly instead of HTTP
+        require_once __DIR__ . '/optimize_images.php';
+        process_images('both', false); // Process both optimize and gallery
         
         return ['ok' => true];
     } catch (Throwable $e) {
@@ -625,28 +551,31 @@ function process_gallery_publishing(string $baseName, string $jsonPath): array {
     }
 }
 
-// Main processing loop
+// Main processing loop - Sequential processing:
+// 1. First: Process all AI corners tasks
+// 2. Second: Process all AI form tasks
+// 3. Third: Process variant generation/regeneration
+
 $files = scandir($imagesDir) ?: [];
 $processedCount = 0;
 $maxProcessPerRun = 10; // Limit to prevent timeout
 
+error_log('[Background Tasks] Scanning images directory: ' . $imagesDir);
+error_log('[Background Tasks] Found ' . count($files) . ' files in directory');
+error_log('[Background Tasks] Max tasks per run: ' . $maxProcessPerRun);
+
+// Collect all JSON files first
+$jsonFiles = [];
 foreach ($files as $file) {
     if ($file === '.' || $file === '..') continue;
     if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
     
     // Check if it's an _original.json file
-    // File format: {baseName}_original.jpg.json
-    // After pathinfo filename: {baseName}_original.jpg
     $stem = pathinfo($file, PATHINFO_FILENAME);
     if (!preg_match('/_original\.jpg$/', $stem)) {
         continue;
     }
     
-    if ($processedCount >= $maxProcessPerRun) {
-        break; // Limit processing per run
-    }
-    
-    // Extract baseName: remove _original.jpg suffix
     $baseName = preg_replace('/_original\.jpg$/', '', $stem);
     $jsonPath = $imagesDir . '/' . $file;
     
@@ -656,8 +585,242 @@ foreach ($files as $file) {
     $meta = json_decode($content, true);
     if (!is_array($meta)) continue;
     
-    // Check variant generation FIRST (create variants that are in active_variants but don't exist)
-    // This has priority over regeneration because we need to create missing variants before regenerating existing ones
+    $jsonFiles[] = [
+        'baseName' => $baseName,
+        'jsonPath' => $jsonPath,
+        'meta' => $meta,
+        'file' => $file
+    ];
+}
+
+$totalJsonFiles = count($jsonFiles);
+error_log('[Background Tasks] Found ' . $totalJsonFiles . ' valid JSON files to process');
+
+// ============================================
+// PHASE 1: Process all AI corners tasks first
+// ============================================
+error_log('[Background Tasks] === PHASE 1: Processing AI corners tasks ===');
+foreach ($jsonFiles as $item) {
+    if ($processedCount >= $maxProcessPerRun) {
+        error_log('[Background Tasks] Processing limit reached (' . $maxProcessPerRun . '), stopping phase 1');
+        break;
+    }
+    
+    $baseName = $item['baseName'];
+    $jsonPath = $item['jsonPath'];
+    $meta = $item['meta'];
+    
+    $aiNeeds = check_ai_generation_needed($meta);
+    if (!$aiNeeds['corners']) {
+        continue;
+    }
+    
+    $cornersStatus = $meta['ai_corners_status'] ?? null;
+    error_log('[Background Tasks] ' . $baseName . ': AI corners status: ' . ($cornersStatus ?? 'null'));
+    
+    if ($cornersStatus === 'in_progress' && is_task_in_progress($meta, 'ai_corners')) {
+        error_log('[Background Tasks] ' . $baseName . ': Skipping AI corners (already in progress)');
+        $originalImageFile = null;
+        $files = scandir($imagesDir) ?: [];
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..') continue;
+            $fileStem = pathinfo($file, PATHINFO_FILENAME);
+            if (strpos($fileStem, $baseName.'_original') === 0) {
+                $originalImageFile = $file;
+                break;
+            }
+        }
+        $results['skipped'][] = [
+            'base' => $baseName,
+            'task' => 'ai_corners',
+            'reason' => 'in_progress',
+            'image' => $originalImageFile ?? $baseName . '_original.jpg',
+            'ai_task' => 'corner_detection',
+            'status' => $cornersStatus
+        ];
+        continue;
+    }
+    
+    // Find original image filename for reporting
+    $originalImageFile = null;
+    $files = scandir($imagesDir) ?: [];
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') continue;
+        $fileStem = pathinfo($file, PATHINFO_FILENAME);
+        if (strpos($fileStem, $baseName.'_original') === 0) {
+            $originalImageFile = $file;
+            break;
+        }
+    }
+    
+    error_log('[Background Tasks] ' . $baseName . ': Processing AI corners (image: ' . ($originalImageFile ?? $baseName . '_original.jpg') . ')');
+    $result = process_ai_corners($baseName, $jsonPath);
+    if ($result['ok']) {
+        error_log('[Background Tasks] ' . $baseName . ': AI corners completed successfully');
+        $results['processed'][] = [
+            'base' => $baseName,
+            'task' => 'ai_corners',
+            'status' => 'success',
+            'image' => $originalImageFile ?? $baseName . '_original.jpg',
+            'ai_task' => 'corner_detection',
+            'description' => 'AI corner detection and image cropping'
+        ];
+        $processedCount++;
+        // Reload meta after corners processing (it may have changed)
+        $content = @file_get_contents($jsonPath);
+        if ($content !== false) {
+            $decoded = json_decode($content, true);
+            if (is_array($decoded)) {
+                $item['meta'] = $decoded;
+            }
+        }
+    } else {
+        error_log('[Background Tasks] ' . $baseName . ': AI corners failed: ' . ($result['error'] ?? 'Unknown error'));
+        $results['errors'][] = [
+            'base' => $baseName,
+            'task' => 'ai_corners',
+            'error' => $result['error'],
+            'image' => $originalImageFile ?? $baseName . '_original.jpg',
+            'ai_task' => 'corner_detection'
+        ];
+    }
+}
+
+// ============================================
+// PHASE 2: Process all AI form tasks
+// ============================================
+error_log('[Background Tasks] === PHASE 2: Processing AI form tasks ===');
+foreach ($jsonFiles as $item) {
+    if ($processedCount >= $maxProcessPerRun) {
+        error_log('[Background Tasks] Processing limit reached (' . $maxProcessPerRun . '), stopping phase 2');
+        break;
+    }
+    
+    $baseName = $item['baseName'];
+    $jsonPath = $item['jsonPath'];
+    $meta = $item['meta'];
+    
+    $aiNeeds = check_ai_generation_needed($meta);
+    if (!$aiNeeds['form']) {
+        continue;
+    }
+    
+    $formStatus = $meta['ai_form_status'] ?? null;
+    error_log('[Background Tasks] ' . $baseName . ': AI form status: ' . ($formStatus ?? 'null'));
+    
+    if ($formStatus === 'in_progress' && is_task_in_progress($meta, 'ai_form')) {
+        error_log('[Background Tasks] ' . $baseName . ': Skipping AI form (already in progress)');
+        $imageFile = null;
+        $files = scandir($imagesDir) ?: [];
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..') continue;
+            $fileStem = pathinfo($file, PATHINFO_FILENAME);
+            if (strpos($fileStem, $baseName.'_final') === 0) {
+                $imageFile = $file;
+                break;
+            }
+        }
+        if (!$imageFile) {
+            foreach ($files as $file) {
+                if ($file === '.' || $file === '..') continue;
+                $fileStem = pathinfo($file, PATHINFO_FILENAME);
+                if (strpos($fileStem, $baseName.'_original') === 0) {
+                    $imageFile = $file;
+                    break;
+                }
+            }
+        }
+        $results['skipped'][] = [
+            'base' => $baseName,
+            'task' => 'ai_form',
+            'reason' => 'in_progress',
+            'image' => $imageFile ?? $baseName . '_final.jpg',
+            'ai_task' => 'form_filling',
+            'status' => $formStatus
+        ];
+        continue;
+    }
+    
+    // Find image filename for reporting
+    $imageFile = null;
+    $files = scandir($imagesDir) ?: [];
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') continue;
+        $fileStem = pathinfo($file, PATHINFO_FILENAME);
+        if (strpos($fileStem, $baseName.'_final') === 0) {
+            $imageFile = $file;
+            break;
+        }
+    }
+    if (!$imageFile) {
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..') continue;
+            $fileStem = pathinfo($file, PATHINFO_FILENAME);
+            if (strpos($fileStem, $baseName.'_original') === 0) {
+                $imageFile = $file;
+                break;
+            }
+        }
+    }
+    
+    error_log('[Background Tasks] ' . $baseName . ': Processing AI form (image: ' . ($imageFile ?? $baseName . '_final.jpg') . ')');
+    $result = process_ai_form($baseName, $jsonPath);
+    if ($result['ok']) {
+        $extractedFields = isset($result['result']) ? array_keys($result['result']) : [];
+        error_log('[Background Tasks] ' . $baseName . ': AI form completed successfully (extracted fields: ' . implode(', ', $extractedFields) . ')');
+        $results['processed'][] = [
+            'base' => $baseName,
+            'task' => 'ai_form',
+            'status' => 'success',
+            'image' => $imageFile ?? $baseName . '_final.jpg',
+            'ai_task' => 'form_filling',
+            'description' => 'AI form filling (title, description, tags, dimensions, date)',
+            'extracted_fields' => $extractedFields
+        ];
+        $processedCount++;
+    } else {
+        error_log('[Background Tasks] ' . $baseName . ': AI form failed: ' . ($result['error'] ?? 'Unknown error'));
+        $results['errors'][] = [
+            'base' => $baseName,
+            'task' => 'ai_form',
+            'error' => $result['error'],
+            'image' => $imageFile ?? $baseName . '_final.jpg',
+            'ai_task' => 'form_filling'
+        ];
+    }
+}
+
+// ============================================
+// PHASE 3: Process variant generation/regeneration (only if no AI tasks pending)
+// ============================================
+error_log('[Background Tasks] === PHASE 3: Processing variant tasks ===');
+foreach ($jsonFiles as $item) {
+    if ($processedCount >= $maxProcessPerRun) {
+        error_log('[Background Tasks] Processing limit reached (' . $maxProcessPerRun . '), stopping phase 3');
+        break;
+    }
+    
+    $baseName = $item['baseName'];
+    $jsonPath = $item['jsonPath'];
+    $meta = $item['meta'];
+    
+    // Reload meta to get latest status after AI processing
+    $content = @file_get_contents($jsonPath);
+    if ($content !== false) {
+        $decoded = json_decode($content, true);
+        if (is_array($decoded)) {
+            $meta = $decoded;
+        }
+    }
+    
+    // Check if there are still pending AI tasks - if so, skip variants
+    $aiNeeds = check_ai_generation_needed($meta);
+    if ($aiNeeds['corners'] || $aiNeeds['form']) {
+        error_log('[Background Tasks] ' . $baseName . ': Skipping variants (AI tasks still pending)');
+        continue;
+    }
+    
+    // Check variant generation (create variants that are in active_variants but don't exist)
     $activeVariants = $meta['active_variants'] ?? [];
     if (!empty($activeVariants) && is_array($activeVariants)) {
         // Check if any variant files are missing
@@ -670,124 +833,128 @@ foreach ($files as $file) {
             }
         }
         
-        if (!empty($missingVariants) && $processedCount < $maxProcessPerRun) {
-            // Process variant generation
+        if (!empty($missingVariants)) {
+            error_log('[Background Tasks] ' . $baseName . ': Missing ' . count($missingVariants) . ' variant(s): ' . implode(', ', $missingVariants));
+            
+            // Find final image filename for reporting
+            $finalImageFile = null;
+            $files = scandir($imagesDir) ?: [];
+            foreach ($files as $file) {
+                if ($file === '.' || $file === '..') continue;
+                $fileStem = pathinfo($file, PATHINFO_FILENAME);
+                if (strpos($fileStem, $baseName.'_final') === 0) {
+                    $finalImageFile = $file;
+                    break;
+                }
+            }
+            
+            error_log('[Background Tasks] ' . $baseName . ': Processing variant generation for ' . count($missingVariants) . ' missing variant(s)');
             $result = process_variant_generation($baseName, $jsonPath, $imagesDir);
             if ($result['ok']) {
                 if (!empty($result['created'])) {
-                    $results['processed'][] = ['base' => $baseName, 'task' => 'variant_generation', 'status' => 'success', 'created' => count($result['created']), 'variants' => $result['created']];
+                    error_log('[Background Tasks] ' . $baseName . ': Successfully created ' . count($result['created']) . ' variant(s): ' . implode(', ', $result['created']));
+                    $results['processed'][] = [
+                        'base' => $baseName,
+                        'task' => 'variant_generation',
+                        'status' => 'success',
+                        'image' => $finalImageFile ?? $baseName . '_final.jpg',
+                        'created' => count($result['created']),
+                        'variants' => $result['created']
+                    ];
                     $processedCount++;
                 }
                 if (!empty($result['errors'])) {
-                    $results['errors'][] = ['base' => $baseName, 'task' => 'variant_generation', 'error' => 'Some variants failed', 'details' => $result['errors']];
-                }
-                // If no variants were created but there were no errors, log it for debugging
-                if (empty($result['created']) && empty($result['errors'])) {
-                    $results['skipped'][] = ['base' => $baseName, 'task' => 'variant_generation', 'reason' => 'no_variants_created', 'missing' => $missingVariants];
+                    error_log('[Background Tasks] ' . $baseName . ': Variant generation errors: ' . json_encode($result['errors']));
+                    $results['errors'][] = [
+                        'base' => $baseName,
+                        'task' => 'variant_generation',
+                        'error' => 'Some variants failed',
+                        'image' => $finalImageFile ?? $baseName . '_final.jpg',
+                        'details' => $result['errors']
+                    ];
                 }
             } else {
-                $results['errors'][] = ['base' => $baseName, 'task' => 'variant_generation', 'error' => $result['error'] ?? 'Unknown error'];
+                error_log('[Background Tasks] ' . $baseName . ': Variant generation failed: ' . ($result['error'] ?? 'Unknown error'));
+                $results['errors'][] = [
+                    'base' => $baseName,
+                    'task' => 'variant_generation',
+                    'error' => $result['error'] ?? 'Unknown error',
+                    'image' => $finalImageFile ?? $baseName . '_final.jpg'
+                ];
             }
-            // Don't continue here - allow AI tasks to be processed in same run if limit allows
-        } elseif (!empty($missingVariants)) {
-            // Missing variants but processedCount limit reached
-            $results['skipped'][] = ['base' => $baseName, 'task' => 'variant_generation', 'reason' => 'limit_reached', 'missing' => $missingVariants];
+            continue; // Skip regeneration check if we just generated variants
         }
     }
     
     // Check variant regeneration (regenerate existing variants if _final is newer)
     if (check_variant_regeneration_needed($baseName, $jsonPath, $imagesDir)) {
+        error_log('[Background Tasks] ' . $baseName . ': Variant regeneration needed');
         if (is_task_in_progress($meta, 'variant_regeneration')) {
+            error_log('[Background Tasks] ' . $baseName . ': Skipping variant regeneration (already in progress)');
             $results['skipped'][] = ['base' => $baseName, 'task' => 'variant_regeneration', 'reason' => 'in_progress'];
-            // Don't continue - allow AI tasks to be processed
         } else {
-            if ($processedCount < $maxProcessPerRun) {
-                $result = process_variant_regeneration($baseName, $jsonPath);
-                if ($result['ok']) {
-                    $results['processed'][] = ['base' => $baseName, 'task' => 'variant_regeneration', 'status' => 'success'];
-                    $processedCount++;
-                } else {
-                    $results['errors'][] = ['base' => $baseName, 'task' => 'variant_regeneration', 'error' => $result['error']];
-                }
-                // Don't continue - allow AI tasks to be processed in same run if limit allows
-            }
-        }
-    }
-    
-    // Check AI generation
-    $aiNeeds = check_ai_generation_needed($meta);
-    if ($aiNeeds['corners'] || $aiNeeds['form']) {
-        // Check if the specific task we want to process is in progress
-        // For parallel processing, we check each task separately
-        $skipCorners = false;
-        $skipForm = false;
-        
-        if ($aiNeeds['corners']) {
-            $cornersStatus = $meta['ai_corners_status'] ?? null;
-            if ($cornersStatus === 'in_progress' && is_task_in_progress($meta, 'ai_corners')) {
-                $skipCorners = true;
-                $results['skipped'][] = ['base' => $baseName, 'task' => 'ai_corners', 'reason' => 'in_progress'];
-            }
-        }
-        
-        if ($aiNeeds['form']) {
-            $formStatus = $meta['ai_form_status'] ?? null;
-            if ($formStatus === 'in_progress' && is_task_in_progress($meta, 'ai_form')) {
-                $skipForm = true;
-                $results['skipped'][] = ['base' => $baseName, 'task' => 'ai_form', 'reason' => 'in_progress'];
-            }
-        }
-        
-        // If both are skipped, continue to next painting
-        if ($skipCorners && $skipForm) {
-            continue;
-        }
-        
-        // Process corners if needed and not skipped
-        if ($aiNeeds['corners'] && !$skipCorners && $processedCount < $maxProcessPerRun) {
-            $result = process_ai_corners($baseName, $jsonPath);
+            error_log('[Background Tasks] ' . $baseName . ': Processing variant regeneration');
+            $result = process_variant_regeneration($baseName, $jsonPath);
             if ($result['ok']) {
-                $results['processed'][] = ['base' => $baseName, 'task' => 'ai_corners', 'status' => 'success'];
+                error_log('[Background Tasks] ' . $baseName . ': Variant regeneration completed successfully');
+                $results['processed'][] = ['base' => $baseName, 'task' => 'variant_regeneration', 'status' => 'success'];
                 $processedCount++;
             } else {
-                $results['errors'][] = ['base' => $baseName, 'task' => 'ai_corners', 'error' => $result['error']];
+                error_log('[Background Tasks] ' . $baseName . ': Variant regeneration failed: ' . ($result['error'] ?? 'Unknown error'));
+                $results['errors'][] = ['base' => $baseName, 'task' => 'variant_regeneration', 'error' => $result['error']];
             }
-        }
-        
-        // Process form if needed and not skipped (can run in parallel with corners)
-        if ($aiNeeds['form'] && !$skipForm && $processedCount < $maxProcessPerRun) {
-            $result = process_ai_form($baseName, $jsonPath);
-            if ($result['ok']) {
-                $results['processed'][] = ['base' => $baseName, 'task' => 'ai_form', 'status' => 'success'];
-                $processedCount++;
-            } else {
-                $results['errors'][] = ['base' => $baseName, 'task' => 'ai_form', 'error' => $result['error']];
-            }
-        }
-        
-        // Only continue if we processed at least one task for this painting
-        if (($aiNeeds['corners'] && !$skipCorners) || ($aiNeeds['form'] && !$skipForm)) {
-            continue; // Process one painting per run (but can process both corners and form for same painting)
         }
     }
     
     // Clean up orphaned variants (files that exist but aren't in active_variants)
-    // Always check for cleanup to ensure orphaned files are removed
     $cleanupResult = cleanup_orphaned_variants($baseName, $jsonPath, $imagesDir);
     if (!empty($cleanupResult['cleaned'])) {
+        error_log('[Background Tasks] ' . $baseName . ': Cleaned up ' . count($cleanupResult['cleaned']) . ' orphaned variant file(s): ' . implode(', ', $cleanupResult['cleaned']));
         $results['processed'][] = ['base' => $baseName, 'task' => 'variant_cleanup', 'status' => 'success', 'cleaned' => count($cleanupResult['cleaned'])];
     }
     if (!empty($cleanupResult['errors'])) {
+        error_log('[Background Tasks] ' . $baseName . ': Variant cleanup errors: ' . json_encode($cleanupResult['errors']));
         $results['errors'][] = ['base' => $baseName, 'task' => 'variant_cleanup', 'error' => 'Failed to delete some files', 'files' => $cleanupResult['errors']];
     }
 }
 
-// Add summary
+error_log('[Background Tasks] Finished processing. Total JSON files checked: ' . $totalJsonFiles);
+error_log('[Background Tasks] Tasks processed: ' . $processedCount . ' / ' . $maxProcessPerRun);
+
+// Add summary with detailed breakdown
+$aiTasks = array_filter($results['processed'], function($item) {
+    return in_array($item['task'], ['ai_corners', 'ai_form']);
+});
+$aiErrors = array_filter($results['errors'], function($item) {
+    return in_array($item['task'], ['ai_corners', 'ai_form']);
+});
+$aiSkipped = array_filter($results['skipped'], function($item) {
+    return in_array($item['task'], ['ai_corners', 'ai_form']);
+});
+
 $results['summary'] = [
     'processed_count' => count($results['processed']),
     'skipped_count' => count($results['skipped']),
-    'error_count' => count($results['errors'])
+    'error_count' => count($results['errors']),
+    'ai_tasks' => [
+        'processed' => count($aiTasks),
+        'errors' => count($aiErrors),
+        'skipped' => count($aiSkipped),
+        'total' => count($aiTasks) + count($aiErrors) + count($aiSkipped)
+    ],
+    'images_affected' => array_unique(array_merge(
+        array_column($results['processed'], 'base'),
+        array_column($results['errors'], 'base'),
+        array_column($results['skipped'], 'base')
+    ))
 ];
+
+error_log('[Background Tasks] Summary:');
+error_log('[Background Tasks]   - Processed: ' . $results['summary']['processed_count']);
+error_log('[Background Tasks]   - Skipped: ' . $results['summary']['skipped_count']);
+error_log('[Background Tasks]   - Errors: ' . $results['summary']['error_count']);
+error_log('[Background Tasks]   - AI Tasks: ' . $results['summary']['ai_tasks']['processed'] . ' processed, ' . $results['summary']['ai_tasks']['errors'] . ' errors, ' . $results['summary']['ai_tasks']['skipped'] . ' skipped');
+error_log('[Background Tasks]   - Images affected: ' . count($results['summary']['images_affected']) . ' (' . implode(', ', $results['summary']['images_affected']) . ')');
 
 echo json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 

@@ -74,9 +74,10 @@ if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
 // Return URL relative to site root
 $url = '/img/upload/' . $filename;
 
-// Trigger async image optimization for upload directory
+// Trigger image optimization for upload directory
 require_once __DIR__.'/utils.php';
-async_http_post('admin/optimize_images.php', ['action' => 'optimize']);
+require_once __DIR__.'/optimize_images.php';
+process_images('optimize', false); // Call function directly instead of async_http_post
 
 echo json_encode([
     'ok' => true,

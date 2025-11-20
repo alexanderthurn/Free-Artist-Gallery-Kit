@@ -1,25 +1,15 @@
 <?php
 declare(strict_types=1);
 
-// Continue execution even if user closes browser/connection
-ignore_user_abort(true);
-
-// Increase execution time limit for long-running operations (10 minutes)
-set_time_limit(600);
-
 require_once __DIR__ . '/utils.php';
 
-header('Content-Type: application/json; charset=utf-8');
-
-try {
-    // Get image_path from POST
-    $imagePath = $_POST['image_path'] ?? '';
-    if ($imagePath === '') {
-        http_response_code(400);
-        echo json_encode(['ok' => false, 'error' => 'image_path required']);
-        exit;
-    }
-
+/**
+ * Process AI image corners and create final image
+ * @param string $imagePath Path to _original image (relative or absolute)
+ * @param float $offsetPercent Offset percentage for corner detection
+ * @return array Result array with 'ok' key and other data
+ */
+function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1.0): array {
     // Resolve absolute path
     $absPath = $imagePath;
     if ($imagePath[0] !== '/' && !preg_match('#^[a-z]+://#i', $imagePath)) {
@@ -27,16 +17,12 @@ try {
     }
     
     if (!is_file($absPath)) {
-        http_response_code(400);
-        echo json_encode(['ok' => false, 'error' => 'image not found', 'path' => $absPath]);
-        exit;
+        return ['ok' => false, 'error' => 'image not found', 'path' => $absPath];
     }
 
     // Verify it's an _original image
     if (!preg_match('/_original\.(jpg|jpeg|png)$/i', $absPath)) {
-        http_response_code(400);
-        echo json_encode(['ok' => false, 'error' => 'image_path must be an _original image']);
-        exit;
+        return ['ok' => false, 'error' => 'image_path must be an _original image'];
     }
 
     // Extract base name (remove _original.jpg extension)
@@ -50,44 +36,37 @@ try {
     // Step 2: Call calculate_corners function directly
     require_once __DIR__ . '/ai_calc_corners.php';
     
-    $offsetPercent = isset($_POST['offset']) ? (float)$_POST['offset'] : 1.0;
     $cornersData = calculate_corners($imagePath, $offsetPercent);
     
     if (!is_array($cornersData) || !$cornersData['ok'] || !isset($cornersData['corners'])) {
         // Reset status to wanted for retry
         update_task_status($metaPath, 'ai_corners', 'wanted');
-        http_response_code(502);
-        echo json_encode([
+        return [
             'ok' => false,
             'error' => 'corner_detection_failed',
             'detail' => $cornersData['error'] ?? 'Unknown error'
-        ]);
-        exit;
+        ];
     }
     
     $corners = $cornersData['corners'];
     if (!is_array($corners) || count($corners) !== 4) {
-        http_response_code(502);
-        echo json_encode([
+        return [
             'ok' => false,
             'error' => 'invalid_corner_count',
             'count' => is_array($corners) ? count($corners) : 0
-        ]);
-        exit;
+        ];
     }
 
-    // Step 2: Create final image using perspective transformation (similar to rectify.php)
+    // Step 3: Create final image using perspective transformation
     // Check if ImageMagick is available
     if (!extension_loaded('imagick') || !class_exists('Imagick')) {
-        http_response_code(500);
-        echo json_encode([
+        return [
             'ok' => false,
             'error' => 'imagick_extension_not_available',
             'detail' => 'ImageMagick extension is not loaded. Please install and enable the imagick PHP extension.',
             'extension_loaded' => extension_loaded('imagick'),
             'class_exists' => class_exists('Imagick')
-        ]);
-        exit;
+        ];
     }
     
     try {
@@ -108,14 +87,12 @@ try {
             error_log("ImageMagick height mismatch: expected {$expectedH}, got {$actualImgH}");
         }
     } catch (Throwable $e) {
-        http_response_code(500);
-        echo json_encode([
+        return [
             'ok' => false,
             'error' => 'failed_to_load_image_with_imagick',
             'detail' => $e->getMessage(),
             'path' => $absPath
-        ]);
-        exit;
+        ];
     }
     
     // Calculate output dimensions based on corners
@@ -182,7 +159,7 @@ try {
         $im->setImageCompressionQuality(95);
         $im->setImageFormat('jpeg');
         
-        // Step 3: Save final image
+        // Step 4: Save final image
         $finalPath = $imagesDir . '/' . $baseName . '_final.jpg';
         $im->writeImage($finalPath);
         $im->clear();
@@ -190,20 +167,18 @@ try {
     } catch (Throwable $e) {
         $im->clear();
         $im->destroy();
-        http_response_code(500);
-        echo json_encode([
+        return [
             'ok' => false,
             'error' => 'failed_to_transform_image',
             'detail' => $e->getMessage()
-        ]);
-        exit;
+        ];
     }
     
-    // Step 4: Generate thumbnail for _final image
+    // Step 5: Generate thumbnail for _final image
     $thumbPath = generate_thumbnail_path($finalPath);
     generate_thumbnail($finalPath, $thumbPath, 512, 1024);
     
-    // Step 5: Update metadata with corner positions (thread-safe)
+    // Step 6: Update metadata with corner positions (thread-safe)
     $metaPath = $imagesDir . '/' . $baseName . '_original.jpg.json';
     
     // Prepare updates
@@ -246,10 +221,10 @@ try {
     // Save updated metadata thread-safely
     update_json_file($metaPath, $updates, false);
     
-    // Step 6: Update AI corners status to completed
+    // Step 7: Update AI corners status to completed
     update_task_status($metaPath, 'ai_corners', 'completed');
     
-    // Step 7: Set variant regeneration flag (will be processed by background task processor)
+    // Step 8: Set variant regeneration flag (will be processed by background task processor)
     update_json_file($metaPath, ['variant_regeneration_status' => 'needed'], false);
     
     // Check if image is in gallery
@@ -257,7 +232,7 @@ try {
     $galleryFilename = find_gallery_entry($baseName, $galleryDir);
     $inGallery = $galleryFilename !== null;
     
-    echo json_encode([
+    return [
         'ok' => true,
         'final_image' => $baseName . '_final.jpg',
         'corners' => $corners,
@@ -269,22 +244,50 @@ try {
         ],
         'output_dimensions' => ['width' => $outputWidth, 'height' => $outputHeight],
         'in_gallery' => $inGallery
-    ]);
+    ];
+}
+
+// HTTP endpoint (only when accessed directly)
+if (basename($_SERVER['SCRIPT_FILENAME']) === basename(__FILE__)) {
+    // Continue execution even if user closes browser/connection
+    ignore_user_abort(true);
     
-} catch (Throwable $e) {
-    // Reset status to wanted for retry
-    if (isset($baseName) && isset($imagesDir)) {
-        $metaPath = $imagesDir . '/' . $baseName . '_original.jpg.json';
-        if (is_file($metaPath)) {
-            update_task_status($metaPath, 'ai_corners', 'wanted');
+    // Increase execution time limit for long-running operations (10 minutes)
+    set_time_limit(600);
+    
+    header('Content-Type: application/json; charset=utf-8');
+    
+    try {
+        // Get image_path from POST
+        $imagePath = $_POST['image_path'] ?? '';
+        if ($imagePath === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'image_path required']);
+            exit;
         }
+
+        $offsetPercent = isset($_POST['offset']) ? (float)$_POST['offset'] : 1.0;
+        $result = process_ai_image_by_corners($imagePath, $offsetPercent);
+        
+        if (!$result['ok']) {
+            http_response_code(500);
+        }
+        
+        echo json_encode($result);
+    } catch (Throwable $e) {
+        // Reset status to wanted for retry
+        if (isset($baseName) && isset($imagesDir)) {
+            $metaPath = $imagesDir . '/' . $baseName . '_original.jpg.json';
+            if (is_file($metaPath)) {
+                update_task_status($metaPath, 'ai_corners', 'wanted');
+            }
+        }
+        http_response_code(500);
+        echo json_encode([
+            'ok' => false,
+            'error' => 'unexpected_error',
+            'detail' => $e->getMessage()
+        ]);
     }
-    http_response_code(500);
-    echo json_encode([
-        'ok' => false,
-        'error' => 'unexpected_error',
-        'detail' => $e->getMessage()
-    ]);
-    exit;
 }
 

@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 
+if (!function_exists('load_replicate_token')) {
 function load_replicate_token(): string {
     $envPath = dirname(__DIR__).'/.env';
     if (!file_exists($envPath)) {
@@ -22,6 +23,7 @@ function load_replicate_token(): string {
         }
     }
     throw new RuntimeException('REPLICATE_API_TOKEN not found in .env');
+}
 }
 
 function http_json_post(string $url, array $headers, array $payload): array {

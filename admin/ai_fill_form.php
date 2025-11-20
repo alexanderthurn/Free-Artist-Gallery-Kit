@@ -91,7 +91,7 @@ $jsonPath = $finalPath . '.json';
 
 // Log the image path being used
 error_log('AI Fill Form: Using image: ' . $finalPath);
-error_log('AI Fill Form: Image filename: ' . $finalImage);
+error_log('AI Fill Form: Image filename: ' . $originalImage);
 error_log('AI Fill Form: JSON path: ' . $jsonPath);
 
 try {
@@ -127,24 +127,28 @@ try {
     error_log('AI Fill Form: Image size: ' . strlen($imageData) . ' bytes, Base64 length: ' . strlen($imgB64));
     
     $prompt = <<<PROMPT
-Analysiere dieses Gemälde und beschreibe den Inhalt für Kunstinteressierte. Fokussiere dich auf das, was tatsächlich zu sehen ist - Personen, Objekte, Herzen, Szenen, Farben, etc.
+Du bist ein erfahrener Kunstkurator und Texter für eine hochwertige Online-Galerie. Deine Aufgabe ist es, eine atmosphärische und ästhetisch ansprechende Beschreibung des hochgeladenen Bildes zu verfassen.
 
-Gib die Informationen als JSON-Objekt zurück:
-- title: Ein beschreibender Titel frauf Deutsch (2-8 Wörter)
-- description: Was ist im Gemälde zu sehen? Beschreibe den Inhalt auf Deutsch (2-3 Sätze, rein inhaltlich, nicht anfangen mit "Das Gemälde zeigt")
-- tags: Relevante Tags auf Deutsch, getrennt durch Kommas
-- width: Geschätzte Breite in cm (als String)
-- height: Geschätzte Höhe in cm (als String). Achte auf das Seitenverhältnis: Wenn das Bild höher als breit ist, muss height > width sein.
-- date: Erstellungsdatum im Format dd.mm.yyyy, falls sichtbar, sonst leer
+Analysiere das Kunstwerk nicht wie eine Datenbank, sondern wie ein Kritiker. Achte besonders auf:
+1. Stimmung & Atmosphäre: Welche Emotionen weckt das Bild? (z.B. melancholisch, energiegeladen, ruhig, mysteriös)
+2. Komposition & Technik: Beschreibe den Pinselstrich, die Lichtführung und die Farbpalette.
+3. Stil: Handelt es sich um Abstraktion, Realismus, Impressionismus etc.?
 
-Antworte NUR mit einem JSON-Objekt in diesem Format:
+Regeln für die Beschreibung:
+- WICHTIG: Schreibe lebendig und evozierend. Vermeide Floskeln wie "Das Bild zeigt" oder "Man sieht".
+- Steige direkt in die Szenerie oder die Stimmung ein.
+- Nutze Adjektive, die die Sinne ansprechen (z.B. "leuchtend", "düster", "texturiert", "sanft").
+- Interpretiere das Gesehene, statt es nur aufzulisten.
+
+Gib das Ergebnis ausschließlich als valides JSON-Objekt zurück:
+
 {
-  "title": "Titel hier",
-  "description": "Beschreibung hier",
-  "tags": "tag1, tag2, tag3",
-  "width": "80",
-  "height": "60",
-  "date": "15.03.2024"
+  "title": "Ein poetischer oder treffender Titel auf Deutsch (2-8 Wörter)",
+  "description": "Ein fließender Text auf Deutsch (2-3 Sätze). Beschreibe die Wirkung der Farben, das Lichtspiel und die zentrale Komposition. Verbinde das Motiv mit der künstlerischen Machart.",
+  "tags": "Stilrichtung, Hauptfarben, Stimmung, zentrale Motive (kommagetrennt)",
+  "width": "Geschätzte Breite als Zahl (String)",
+  "height": "Geschätzte Höhe als Zahl (String) - Achte strikt auf das Seitenverhältnis!",
+  "date": "Datum im Format dd.mm.yyyy (nur falls signiert/sichtbar, sonst leer lassen)"
 }
 PROMPT;
     
@@ -290,7 +294,8 @@ PROMPT;
     $output = '';
     if (isset($resp['output'])) {
         if (is_array($resp['output'])) {
-            $output = implode(' ', $resp['output']);
+            // Join without spaces to avoid breaking JSON (numbers/quotes can be split across array elements)
+            $output = implode('', $resp['output']);
         } else {
             $output = (string)$resp['output'];
         }
@@ -309,9 +314,135 @@ PROMPT;
     
     // Try to extract JSON from the output
     $jsonMatch = null;
-    // Try to find JSON object in the output
-    if (preg_match('/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/s', $output, $matches)) {
-        $jsonMatch = json_decode($matches[0], true);
+    
+    // Step 1: Try to extract JSON from code blocks (```json ... ```)
+    if (preg_match('/```(?:json)?\s*(\{.*)\s*```/s', $output, $matches)) {
+        $jsonStr = $matches[1];
+        
+        // Find the complete JSON object by matching braces
+        $braceCount = 0;
+        $jsonEnd = 0;
+        $inString = false;
+        $escapeNext = false;
+        
+        for ($i = 0; $i < strlen($jsonStr); $i++) {
+            $char = $jsonStr[$i];
+            
+            if ($escapeNext) {
+                $escapeNext = false;
+                continue;
+            }
+            
+            if ($char === '\\') {
+                $escapeNext = true;
+                continue;
+            }
+            
+            if ($char === '"' && !$escapeNext) {
+                $inString = !$inString;
+                continue;
+            }
+            
+            if (!$inString) {
+                if ($char === '{') {
+                    $braceCount++;
+                } elseif ($char === '}') {
+                    $braceCount--;
+                    if ($braceCount === 0) {
+                        $jsonEnd = $i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if ($braceCount === 0 && $jsonEnd > 0) {
+            $jsonStr = substr($jsonStr, 0, $jsonEnd);
+            // Clean up the JSON string - handle various split cases from array joining
+            $jsonStr = preg_replace('/"(\w+)"\s*"\s*\\\?":/', '"$1":', $jsonStr); // Fix split quotes in keys
+            $jsonStr = preg_replace('/:\s*"\s*"([^"]+)"/', ': "$1"', $jsonStr); // Fix split quotes in values
+            $jsonStr = preg_replace('/:\s*(\d+)"\s*"(\d+\.\d+)/', ': $1$2', $jsonStr); // Fix split numbers
+            $jsonStr = preg_replace('/:\s*(\d+\.\d+)"\s*"(\d+)/', ': $1$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $jsonStr); // Fix spaces in decimals
+            $jsonStr = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $jsonStr);
+            $jsonStr = preg_replace('/"\s*"([^"]+)"/', '"$1"', $jsonStr); // Fix any remaining quote splits
+            $jsonMatch = json_decode($jsonStr, true);
+        }
+    }
+    
+    // Step 2: If that fails, try to extract JSON using brace matching
+    if (($jsonMatch === null || !is_array($jsonMatch)) && strpos($output, '{') !== false) {
+        $jsonStart = strpos($output, '{');
+        $braceCount = 0;
+        $jsonEnd = $jsonStart;
+        $inString = false;
+        $escapeNext = false;
+        
+        for ($i = $jsonStart; $i < strlen($output); $i++) {
+            $char = $output[$i];
+            
+            if ($escapeNext) {
+                $escapeNext = false;
+                continue;
+            }
+            
+            if ($char === '\\') {
+                $escapeNext = true;
+                continue;
+            }
+            
+            if ($char === '"' && !$escapeNext) {
+                $inString = !$inString;
+                continue;
+            }
+            
+            if (!$inString) {
+                if ($char === '{') {
+                    $braceCount++;
+                } elseif ($char === '}') {
+                    $braceCount--;
+                    if ($braceCount === 0) {
+                        $jsonEnd = $i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if ($braceCount === 0 && $jsonEnd > $jsonStart) {
+            $jsonStr = substr($output, $jsonStart, $jsonEnd - $jsonStart);
+            // Clean up the JSON string
+            $jsonStr = preg_replace('/"(\w+)"\s*"\s*\\\?":/', '"$1":', $jsonStr);
+            $jsonStr = preg_replace('/:\s*"\s*"([^"]+)"/', ': "$1"', $jsonStr);
+            $jsonStr = preg_replace('/:\s*(\d+)"\s*"(\d+\.\d+)/', ': $1$2', $jsonStr);
+            $jsonStr = preg_replace('/:\s*(\d+\.\d+)"\s*"(\d+)/', ': $1$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $jsonStr);
+            $jsonStr = preg_replace('/"\s*"([^"]+)"/', '"$1"', $jsonStr);
+            $jsonMatch = json_decode($jsonStr, true);
+        }
+    }
+    
+    // Step 3: Last resort - try simple regex (original method)
+    if ($jsonMatch === null || !is_array($jsonMatch)) {
+        if (preg_match('/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/s', $output, $matches)) {
+            $cleanedMatch = $matches[0];
+            // Clean up the JSON string
+            $cleanedMatch = preg_replace('/"(\w+)"\s*"\s*\\\?":/', '"$1":', $cleanedMatch);
+            $cleanedMatch = preg_replace('/:\s*"\s*"([^"]+)"/', ': "$1"', $cleanedMatch);
+            $cleanedMatch = preg_replace('/:\s*(\d+)"\s*"(\d+\.\d+)/', ': $1$2', $cleanedMatch);
+            $cleanedMatch = preg_replace('/:\s*(\d+\.\d+)"\s*"(\d+)/', ': $1$2', $cleanedMatch);
+            $cleanedMatch = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $cleanedMatch);
+            $cleanedMatch = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $cleanedMatch);
+            $cleanedMatch = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $cleanedMatch);
+            $cleanedMatch = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $cleanedMatch);
+            $cleanedMatch = preg_replace('/"\s*"([^"]+)"/', '"$1"', $cleanedMatch);
+            $jsonMatch = json_decode($cleanedMatch, true);
+        }
     }
     
     // Get current date in German format (dd.mm.yyyy)
@@ -323,6 +454,14 @@ PROMPT;
     $imageHeight = $imageInfo ? $imageInfo[1] : null;
     $isPortrait = $imageWidth && $imageHeight && $imageHeight > $imageWidth;
     $isLandscape = $imageWidth && $imageHeight && $imageWidth > $imageHeight;
+    
+    // Log parsing result for debugging
+    if ($jsonMatch && is_array($jsonMatch)) {
+        error_log('AI Fill Form: Successfully parsed JSON from output');
+    } else {
+        error_log('AI Fill Form: Failed to parse JSON, output length: ' . strlen($output));
+        error_log('AI Fill Form: Output preview: ' . substr($output, 0, 500));
+    }
     
     if ($jsonMatch && is_array($jsonMatch)) {
         // Use date from AI if available, otherwise use current date

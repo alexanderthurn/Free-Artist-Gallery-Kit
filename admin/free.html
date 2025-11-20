@@ -119,6 +119,9 @@
       padding: 40px;
       color: #666;
     }
+    #zoomCanvas {
+      z-index: 10;
+    }
     @media (max-width: 768px) {
       .canvas-container {
         flex-direction: column;
@@ -155,7 +158,10 @@
         </div>
         <div class="canvas-wrapper">
           <h2>Vorschau</h2>
-          <canvas id="previewCanvas"></canvas>
+          <div style="position: relative; display: inline-block;">
+            <canvas id="previewCanvas"></canvas>
+            <canvas id="zoomCanvas" style="position: absolute; pointer-events: none; display: none; border: 2px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.3); background: #fff;"></canvas>
+          </div>
         </div>
       </div>
     </div>
@@ -174,8 +180,10 @@
 
     const sourceCanvas = document.getElementById('sourceCanvas');
     const previewCanvas = document.getElementById('previewCanvas');
+    const zoomCanvas = document.getElementById('zoomCanvas');
     const sourceCtx = sourceCanvas.getContext('2d');
     const previewCtx = previewCanvas.getContext('2d');
+    const zoomCtx = zoomCanvas.getContext('2d');
     
     let sourceImage = null;
     let corners = [
@@ -189,6 +197,10 @@
     let isDragging = false;
     let savedCorners = null;
     let isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    let mouseX = -1;
+    let mouseY = -1;
+    const zoomLevel = 8; // 8x magnification
+    const zoomSize = 200; // Size of the magnifying glass in pixels
 
     // Convert centimeters to pixels
     // Standard CSS reference: 1 inch = 96 pixels, 1 inch = 2.54 cm
@@ -464,6 +476,130 @@
       }
       
       previewCtx.putImageData(outputData, 0, 0);
+      
+      // Update zoom if mouse is over preview
+      if (mouseX >= 0 && mouseY >= 0) {
+        drawZoom(mouseX, mouseY);
+      }
+    }
+
+    function getPreviewCanvasCoordinates(e) {
+      const rect = previewCanvas.getBoundingClientRect();
+      let clientX, clientY;
+      
+      if (e.touches && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+      
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      
+      const scaleX = previewCanvas.width / rect.width;
+      const scaleY = previewCanvas.height / rect.height;
+      
+      return {
+        x: x * scaleX,
+        y: y * scaleY
+      };
+    }
+
+    function drawZoom(mouseX, mouseY) {
+      if (mouseX < 0 || mouseY < 0 || !previewCanvas.width || !previewCanvas.height) {
+        zoomCanvas.style.display = 'none';
+        return;
+      }
+      
+      const rect = previewCanvas.getBoundingClientRect();
+      const zoomRadius = zoomSize / 2;
+      const sourceRadius = zoomRadius / zoomLevel;
+      
+      // Calculate source coordinates in preview canvas
+      const sourceX = Math.max(sourceRadius, Math.min(previewCanvas.width - sourceRadius, mouseX));
+      const sourceY = Math.max(sourceRadius, Math.min(previewCanvas.height - sourceRadius, mouseY));
+      
+      // Set zoom canvas size
+      zoomCanvas.width = zoomSize;
+      zoomCanvas.height = zoomSize;
+      
+      // Clear and draw zoomed area
+      zoomCtx.clearRect(0, 0, zoomSize, zoomSize);
+      
+      // Draw the zoomed image
+      zoomCtx.imageSmoothingEnabled = false; // Pixel-perfect rendering
+      zoomCtx.drawImage(
+        previewCanvas,
+        sourceX - sourceRadius, sourceY - sourceRadius, // Source position
+        sourceRadius * 2, sourceRadius * 2, // Source size
+        0, 0, // Destination position
+        zoomSize, zoomSize // Destination size
+      );
+      
+      // Draw pixel grid
+      zoomCtx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+      zoomCtx.lineWidth = 0.5;
+      const pixelSize = zoomSize / (sourceRadius * 2);
+      const centerX = zoomSize / 2;
+      const centerY = zoomSize / 2;
+      
+      // Draw grid lines
+      for (let i = -sourceRadius; i <= sourceRadius; i++) {
+        const pos = centerX + i * pixelSize;
+        zoomCtx.beginPath();
+        zoomCtx.moveTo(pos, 0);
+        zoomCtx.lineTo(pos, zoomSize);
+        zoomCtx.stroke();
+        
+        zoomCtx.beginPath();
+        zoomCtx.moveTo(0, pos);
+        zoomCtx.lineTo(zoomSize, pos);
+        zoomCtx.stroke();
+      }
+      
+      // Draw center crosshair
+      zoomCtx.strokeStyle = '#ff0000';
+      zoomCtx.lineWidth = 1;
+      zoomCtx.beginPath();
+      zoomCtx.moveTo(centerX - 10, centerY);
+      zoomCtx.lineTo(centerX + 10, centerY);
+      zoomCtx.moveTo(centerX, centerY - 10);
+      zoomCtx.lineTo(centerX, centerY + 10);
+      zoomCtx.stroke();
+      
+      // Draw border
+      zoomCtx.strokeStyle = '#333';
+      zoomCtx.lineWidth = 2;
+      zoomCtx.strokeRect(0, 0, zoomSize, zoomSize);
+      
+      // Position zoom canvas near mouse cursor
+      const canvasX = rect.left + (sourceX / (previewCanvas.width / rect.width)) - zoomRadius;
+      const canvasY = rect.top + (sourceY / (previewCanvas.height / rect.height)) - zoomRadius;
+      
+      // Adjust position to keep it within viewport
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      let finalX = canvasX;
+      let finalY = canvasY;
+      
+      if (finalX + zoomSize > viewportWidth) {
+        finalX = viewportWidth - zoomSize - 10;
+      }
+      if (finalX < 0) {
+        finalX = 10;
+      }
+      if (finalY + zoomSize > viewportHeight) {
+        finalY = viewportHeight - zoomSize - 10;
+      }
+      if (finalY < 0) {
+        finalY = 10;
+      }
+      
+      zoomCanvas.style.left = finalX + 'px';
+      zoomCanvas.style.top = finalY + 'px';
+      zoomCanvas.style.display = 'block';
     }
 
     function getCornerAt(x, y, isTouch = false) {
@@ -616,6 +752,27 @@
       e.preventDefault();
       handlePointerUp();
     }, { passive: false });
+
+    // Zoom effect on preview canvas
+    previewCanvas.addEventListener('mousemove', (e) => {
+      const coords = getPreviewCanvasCoordinates(e);
+      mouseX = coords.x;
+      mouseY = coords.y;
+      drawZoom(mouseX, mouseY);
+    });
+
+    previewCanvas.addEventListener('mouseleave', () => {
+      mouseX = -1;
+      mouseY = -1;
+      zoomCanvas.style.display = 'none';
+    });
+
+    previewCanvas.addEventListener('mousedown', (e) => {
+      const coords = getPreviewCanvasCoordinates(e);
+      mouseX = coords.x;
+      mouseY = coords.y;
+      drawZoom(mouseX, mouseY);
+    });
 
     document.getElementById('resetBtn').addEventListener('click', () => {
       corners[0] = { x: 0, y: 0 };

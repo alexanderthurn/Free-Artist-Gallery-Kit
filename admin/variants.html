@@ -93,20 +93,68 @@
         item.id = `variant-${escapeHtml(variant.name)}`;
         const date = new Date(variant.mtime * 1000).toLocaleString('de-DE');
         const nameWithoutExt = variant.name.replace(/\.[^/.]+$/, '');
-        // Add cache-busting parameter using mtime timestamp
-        const baseUrl = variant.url;
-        const separator = baseUrl.includes('?') ? '&' : '?';
-        const cacheBuster = variant.mtime ? `${separator}t=${variant.mtime}` : `${separator}t=${Date.now()}`;
-        const imageUrl = baseUrl + cacheBuster;
-        item.innerHTML = `
-          <img class="variant-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(variant.name)}" loading="lazy">
-          <div class="variant-name-display" onclick="startRename('${escapeHtml(variant.name)}')" title="Klicken zum Umbenennen">${escapeHtml(variant.name)}</div>
-          <div class="muted" style="font-size: 11px; margin-bottom: 8px;">${date}</div>
-          <div class="variant-actions">
-            <button type="button" onclick="startRename('${escapeHtml(variant.name)}')">Umbenennen</button>
-            <button type="button" class="danger" onclick="deleteVariant('${escapeHtml(variant.name)}', this)">Löschen</button>
-          </div>
-        `;
+        const variantName = variant.variant_name || nameWithoutExt;
+        
+        // Check if variant is pending (no image file yet)
+        const isPending = variant.pending === true;
+        
+        let itemContent = '';
+        
+        if (isPending) {
+          // Show as badge similar to index.html
+          itemContent = `
+            <div style="width: 100%; aspect-ratio: 1 / 1; border-radius: 6px; position: relative; overflow: hidden; box-sizing: border-box; margin-bottom: 8px;">
+              <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4px; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);">
+                <span style="font-size: 24px; color: #fff;">⭐</span>
+                <span style="font-size: 12px; color: #fff; font-weight: 600; text-align: center; line-height: 1.2; margin-top: 4px;">${escapeHtml(variantName)}</span>
+              </div>
+            </div>
+            <div class="variant-name-display" onclick="startRename('${escapeHtml(variant.name)}')" title="Klicken zum Umbenennen">${escapeHtml(variant.name)}</div>
+            <div style="background: #ffa500; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-bottom: 4px; display: inline-block;">In Bearbeitung</div>
+            <div class="muted" style="font-size: 11px; margin-bottom: 8px;">${date}</div>
+            <div class="variant-actions">
+              <button type="button" onclick="startRename('${escapeHtml(variant.name)}')">Umbenennen</button>
+              <button type="button" class="danger" onclick="deleteVariant('${escapeHtml(variant.name)}', this)">Löschen</button>
+            </div>
+          `;
+        } else {
+          // Show normal variant with image
+          const baseUrl = variant.url;
+          const separator = baseUrl.includes('?') ? '&' : '?';
+          const cacheBuster = variant.mtime ? `${separator}t=${variant.mtime}` : `${separator}t=${Date.now()}`;
+          const imageUrl = baseUrl + cacheBuster;
+          
+          // Show status badge if in progress
+          const statusBadge = variant.status === 'in_progress' 
+            ? '<div style="background: #ffa500; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-bottom: 4px; display: inline-block;">In Bearbeitung</div>'
+            : '';
+          
+          // Show regenerate button only for completed template variants
+          const isTemplate = variant.type === 'template';
+          const isCompleted = variant.status === 'completed' || (variant.status !== 'in_progress' && variant.status !== 'wanted' && !isPending);
+          const hasPrompt = variant.prompt && variant.prompt.trim() !== '';
+          const regenerateSection = (isTemplate && isCompleted && hasPrompt) ? `
+            <div id="regenerate-${escapeHtml(variant.name)}" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #eee;">
+              <textarea id="regenerate-prompt-${escapeHtml(variant.name)}" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 6px; font: inherit; background: #fff; color: #000; min-height: 80px; resize: vertical; margin-bottom: 8px; font-size: 12px;">${escapeHtml(variant.prompt || '')}</textarea>
+              <button type="button" class="primary" onclick="regenerateVariant('${escapeHtml(variant.name)}', this)" style="width: 100%; font-size: 12px; padding: 6px 8px;">Variante generieren</button>
+            </div>
+          ` : '';
+          
+          itemContent = `
+            <img class="variant-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(variant.name)}" loading="lazy" ${variant.status === 'in_progress' ? 'style="opacity: 0.6;"' : ''}>
+            <div class="variant-name-display" onclick="startRename('${escapeHtml(variant.name)}')" title="Klicken zum Umbenennen">${escapeHtml(variant.name)}</div>
+            ${statusBadge}
+            <div class="muted" style="font-size: 11px; margin-bottom: 8px;">${date}</div>
+            <div class="variant-actions">
+              <button type="button" onclick="startRename('${escapeHtml(variant.name)}')">Umbenennen</button>
+              <button type="button" class="danger" onclick="deleteVariant('${escapeHtml(variant.name)}', this)">Löschen</button>
+              ${(isTemplate && isCompleted && hasPrompt) ? `<button type="button" onclick="toggleRegenerate('${escapeHtml(variant.name)}')" style="background: #28a745; color: #fff; border-color: #28a745;">Erneut generieren</button>` : ''}
+            </div>
+            ${regenerateSection}
+          `;
+        }
+        
+        item.innerHTML = itemContent;
         container.appendChild(item);
       });
     }
@@ -238,7 +286,11 @@
               const retryRes = await fetch('variants.php', { method: 'POST', body });
               const retryData = await retryRes.json();
               if (retryData.ok) {
-                showToast('Variante erfolgreich generiert und ersetzt', 'success');
+                if (retryData.prediction_started) {
+                  showToast('Variante wird generiert... (in Bearbeitung)', 'info');
+                } else {
+                  showToast('Variante erfolgreich generiert und ersetzt', 'success');
+                }
                 refresh();
                 return;
               }
@@ -249,7 +301,11 @@
           return;
         }
 
-        showToast(data.replaced ? 'Variante erfolgreich generiert und ersetzt' : 'Variante erfolgreich generiert', 'success');
+        if (data.prediction_started) {
+          showToast('Variante wird generiert... (in Bearbeitung)', 'info');
+        } else {
+          showToast(data.replaced ? 'Variante erfolgreich generiert und ersetzt' : 'Variante erfolgreich generiert', 'success');
+        }
         refresh();
       } catch (error) {
         showToast('Fehler: ' + error.message, 'error');
@@ -420,6 +476,81 @@
       }
     }
 
+    function toggleRegenerate(filename) {
+      // filename is already escaped in the HTML, use it directly
+      const regenerateSection = document.getElementById(`regenerate-${filename}`);
+      if (regenerateSection) {
+        const isVisible = regenerateSection.style.display !== 'none';
+        regenerateSection.style.display = isVisible ? 'none' : 'block';
+        
+        // Focus textarea when showing
+        if (!isVisible) {
+          const textarea = document.getElementById(`regenerate-prompt-${filename}`);
+          if (textarea) {
+            setTimeout(() => textarea.focus(), 100);
+          }
+        }
+      }
+    }
+
+    async function regenerateVariant(filename, btn) {
+      // filename is already escaped in the HTML, use it directly
+      const textarea = document.getElementById(`regenerate-prompt-${filename}`);
+      if (!textarea) {
+        showToast('Textarea nicht gefunden', 'error');
+        return;
+      }
+      
+      const prompt = textarea.value.trim();
+      if (prompt === '') {
+        showToast('Bitte geben Sie einen Prompt ein', 'error');
+        textarea.focus();
+        return;
+      }
+      
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Generiere...';
+      
+      try {
+        const body = new FormData();
+        body.set('action', 'regenerate');
+        body.set('filename', filename);
+        body.set('prompt', prompt);
+        
+        const res = await fetch('variants.php', { method: 'POST', body });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showToast('Regenerierung fehlgeschlagen: ' + (data.error || 'Unknown'), 'error');
+          return;
+        }
+        
+        const data = await res.json();
+        if (!data.ok) {
+          showToast('Regenerierung fehlgeschlagen: ' + (data.error || 'Unknown'), 'error');
+          return;
+        }
+        
+        // Hide regenerate section
+        const regenerateSection = document.getElementById(`regenerate-${filename}`);
+        if (regenerateSection) {
+          regenerateSection.style.display = 'none';
+        }
+        
+        if (data.prediction_started) {
+          showToast('Variante wird regeneriert... (in Bearbeitung)', 'info');
+        } else {
+          showToast('Variante erfolgreich regeneriert', 'success');
+        }
+        refresh();
+      } catch (error) {
+        showToast('Fehler: ' + error.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    }
+
     async function deleteVariant(filename, btn) {
       if (!confirm('Möchten Sie diese Variante wirklich löschen?')) {
         return;
@@ -551,6 +682,7 @@
       <a href="index.html" style="color: #555; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #888; border-radius: 6px;">Gemälde</a>
       <a href="variants.html" style="color: #555; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #888; border-radius: 6px; background: #f5f5f5;">Raum-Mockups</a>
       <a href="artist.html" style="color: #555; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #888; border-radius: 6px;">Künstler</a>
+      <button id="bgTasksBtn" style="font-size: 10px; padding: 4px 8px; border: 1px solid #888; border-radius: 4px; background: #fff; color: #555; cursor: pointer; position: relative;" title="Background Tasks">B</button>
     </div>
   </div>
 
@@ -591,6 +723,111 @@
     </div>
     <div id="variants" class="list"></div>
   </div>
+  
+  <script>
+    // Background Tasks Utility
+    async function processBackgroundTasks() {
+      try {
+        const formData = new FormData();
+        formData.set('async', '0');
+        
+        const res = await fetch('process_background_tasks.php', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        
+        const data = await res.json();
+        return data;
+      } catch (error) {
+        console.error('Background tasks error:', error);
+        throw error;
+      }
+    }
+    
+    async function getBackgroundTasksPreview() {
+      try {
+        const res = await fetch('process_background_tasks.php?preview=1');
+        if (!res.ok) return null;
+        return await res.json();
+      } catch (error) {
+        console.error('Preview error:', error);
+        return null;
+      }
+    }
+    
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+      
+      const toast = document.createElement('div');
+      toast.className = `toast ${type}`;
+      toast.textContent = message;
+      container.appendChild(toast);
+      
+      setTimeout(() => {
+        toast.classList.add('hiding');
+        setTimeout(() => {
+          if (toast.parentElement) {
+            toast.parentElement.removeChild(toast);
+          }
+        }, 300);
+      }, 3000);
+    }
+    
+    // Setup background tasks button
+    (function() {
+      const btn = document.getElementById('bgTasksBtn');
+      if (!btn) return;
+      
+      let previewTimeout;
+      let previewDiv = null;
+      
+      btn.addEventListener('mouseenter', async function() {
+        previewTimeout = setTimeout(async () => {
+          const preview = await getBackgroundTasksPreview();
+          if (!preview || !preview.summary) return;
+          
+          previewDiv = document.createElement('div');
+          previewDiv.style.cssText = 'position: absolute; top: 100%; right: 0; margin-top: 4px; background: #fff; border: 1px solid #888; border-radius: 6px; padding: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; min-width: 200px; font-size: 12px; white-space: nowrap;';
+          previewDiv.innerHTML = `
+            <div style="font-weight: 600; margin-bottom: 8px; color: #333;">Background Tasks</div>
+            <div style="color: #666;">Variants: ${preview.summary.variants || 0}</div>
+            <div style="color: #666;">AI: ${preview.summary.ai || 0}</div>
+            <div style="color: #666;">Gallery: ${preview.summary.gallery || 0}</div>
+          `;
+          btn.style.position = 'relative';
+          btn.parentElement.style.position = 'relative';
+          btn.parentElement.appendChild(previewDiv);
+        }, 300);
+      });
+      
+      btn.addEventListener('mouseleave', function() {
+        clearTimeout(previewTimeout);
+        if (previewDiv && previewDiv.parentElement) {
+          previewDiv.parentElement.removeChild(previewDiv);
+          previewDiv = null;
+        }
+      });
+      
+      btn.addEventListener('click', async function() {
+        btn.disabled = true;
+        btn.textContent = '...';
+        try {
+          const result = await processBackgroundTasks();
+          showToast(`Background tasks processed: ${result.processed?.length || 0} processed, ${result.errors?.length || 0} errors`, result.ok ? 'success' : 'error');
+        } catch (error) {
+          showToast('Fehler beim Verarbeiten der Background Tasks', 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'B';
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
 

@@ -1,0 +1,3 @@
+ Replicate Integration Standards
+
+- Niemals Replicate synchron in HTTP-Request-Handlern aufrufen. Verwende immer das Job-Queue-Pattern aus admin/process_background_tasks.php

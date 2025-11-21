@@ -44,36 +44,85 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
         }
     }
     
-    // Step 1: Update status to in_progress
+    // Step 1: Check if corners are already completed and available
     $metaPath = get_meta_path($originalImageFile, $imagesDir);
-    update_task_status($metaPath, 'ai_corners', 'in_progress');
+    $existingMeta = [];
+    if (is_file($metaPath)) {
+        $existingContent = @file_get_contents($metaPath);
+        if ($existingContent !== false) {
+            $decoded = json_decode($existingContent, true);
+            if (is_array($decoded)) {
+                $existingMeta = $decoded;
+            }
+        }
+    }
     
-    // Step 2: Call calculate_corners function directly
-    require_once __DIR__ . '/ai_calc_corners.php';
+    $aiCorners = $existingMeta['ai_corners'] ?? [];
+    $cornersStatus = $aiCorners['status'] ?? null;
+    $cornersUsed = $aiCorners['corners_used'] ?? null;
+    $replicateResponse = $aiCorners['replicate_response'] ?? null;
     
-    $cornersData = calculate_corners($imagePath, $offsetPercent);
+    // Check if there's already a completed Replicate response
+    $hasCompletedReplicateResponse = $replicateResponse && 
+        is_array($replicateResponse) && 
+        isset($replicateResponse['status']) && 
+        $replicateResponse['status'] === 'succeeded';
+    $imageGenerationNeeded = $aiCorners['image_generation_needed'] ?? false;
     
-    // Handle async return format - if prediction was started, return early
-    if (isset($cornersData['prediction_started']) && $cornersData['prediction_started']) {
+    // If there's a completed Replicate response but image_generation_needed is NOT set,
+    // set flag and let background task handle it (this is when user clicks the button)
+    // If image_generation_needed IS already set, proceed to generate the image (background task)
+    if ($hasCompletedReplicateResponse && !$imageGenerationNeeded) {
+        $aiCorners['status'] = 'in_progress';
+        $aiCorners['image_generation_needed'] = true;
+        update_json_file($metaPath, ['ai_corners' => $aiCorners], false);
+        
         return [
             'ok' => true,
-            'prediction_started' => true,
-            'url' => $cornersData['url'] ?? null,
-            'message' => 'Corner detection prediction started, will be processed by background task'
+            'prediction_started' => false,
+            'image_generation_scheduled' => true,
+            'message' => 'Image generation scheduled for background task (using existing Replicate response)'
         ];
     }
     
-    if (!is_array($cornersData) || !$cornersData['ok'] || !isset($cornersData['corners'])) {
-        // Reset status to wanted for retry
-        update_task_status($metaPath, 'ai_corners', 'wanted');
-        return [
-            'ok' => false,
-            'error' => 'corner_detection_failed',
-            'detail' => $cornersData['error'] ?? 'Unknown error'
-        ];
+    // If corners are already available (completed status OR image_generation_needed flag set), use them directly
+    if (($cornersStatus === 'completed' || $imageGenerationNeeded) && 
+        $cornersUsed && is_array($cornersUsed) && count($cornersUsed) === 4) {
+        $corners = $cornersUsed;
+        // Skip to image processing - corners are already available
+    } else {
+        // Step 2: Update status to in_progress (only if not already completed)
+        if ($cornersStatus !== 'completed') {
+            update_task_status($metaPath, 'ai_corners', 'in_progress');
+        }
+        
+        // Step 3: Call calculate_corners function directly
+        require_once __DIR__ . '/ai_calc_corners.php';
+        
+        $cornersData = calculate_corners($imagePath, $offsetPercent);
+        
+        // Handle async return format - if prediction was started, return early
+        if (isset($cornersData['prediction_started']) && $cornersData['prediction_started']) {
+            return [
+                'ok' => true,
+                'prediction_started' => true,
+                'url' => $cornersData['url'] ?? null,
+                'message' => 'Corner detection prediction started, will be processed by background task'
+            ];
+        }
+        
+        if (!is_array($cornersData) || !$cornersData['ok'] || !isset($cornersData['corners'])) {
+            // Reset status to wanted for retry
+            update_task_status($metaPath, 'ai_corners', 'wanted');
+            return [
+                'ok' => false,
+                'error' => 'corner_detection_failed',
+                'detail' => $cornersData['error'] ?? 'Unknown error'
+            ];
+        }
+        
+        $corners = $cornersData['corners'];
     }
-    
-    $corners = $cornersData['corners'];
     if (!is_array($corners) || count($corners) !== 4) {
         return [
             'ok' => false,
@@ -82,7 +131,7 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
         ];
     }
 
-    // Step 3: Create final image using perspective transformation
+    // Step 4: Create final image using perspective transformation
     // Check if ImageMagick is available
     if (!extension_loaded('imagick') || !class_exists('Imagick')) {
         return [
@@ -184,7 +233,7 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
         $im->setImageCompressionQuality(95);
         $im->setImageFormat('jpeg');
         
-        // Step 4: Save final image
+        // Step 5: Save final image
         $finalPath = $imagesDir . '/' . $baseName . '_final.jpg';
         $im->writeImage($finalPath);
         $im->clear();
@@ -199,11 +248,11 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
         ];
     }
     
-    // Step 5: Generate thumbnail for _final image
+    // Step 6: Generate thumbnail for _final image
     $thumbPath = generate_thumbnail_path($finalPath);
     generate_thumbnail($finalPath, $thumbPath, 512, 1024);
     
-    // Step 6: Update metadata with corner positions (thread-safe)
+    // Step 7: Update metadata with corner positions (thread-safe)
     $metaPath = get_meta_path($originalImageFile, $imagesDir);
     
     // Prepare updates - update ai_corners object
@@ -259,10 +308,10 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
     // Save updated metadata thread-safely
     update_json_file($metaPath, $updates, false);
     
-    // Step 7: Update AI corners status to completed
+    // Step 8: Update AI corners status to completed
     update_task_status($metaPath, 'ai_corners', 'completed');
     
-    // Step 8: Set variant regeneration flag (will be processed by background task processor)
+    // Step 9: Set variant regeneration flag (will be processed by background task processor)
     update_json_file($metaPath, ['variant_regeneration_status' => 'needed'], false);
     
     // Check if image is in gallery

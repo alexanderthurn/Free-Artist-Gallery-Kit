@@ -262,53 +262,61 @@ function process_ai_corners(string $baseName, string $jsonPath): array {
         return ['ok' => false, 'error' => $pollResult['error'] ?? 'Polling failed'];
     }
     
-    // Check if status is completed but final image doesn't exist yet
-    if ($cornersStatus === 'completed') {
+    // Check if image generation is needed (flag set) or status is completed
+    $imageGenerationNeeded = $aiCorners['image_generation_needed'] ?? false;
+    
+    if ($imageGenerationNeeded || $cornersStatus === 'completed') {
         $cornersUsed = $aiCorners['corners_used'] ?? null;
+        $replicateResponse = $aiCorners['replicate_response'] ?? null;
+        
+        // If we have a Replicate response but no corners_used yet, process it first
+        if ($replicateResponse && is_array($replicateResponse) && 
+            isset($replicateResponse['status']) && 
+            $replicateResponse['status'] === 'succeeded' &&
+            (!$cornersUsed || !is_array($cornersUsed) || count($cornersUsed) !== 4)) {
+            // Process the Replicate response to extract corners
+            require_once __DIR__ . '/ai_calc_corners.php';
+            $processResult = process_completed_corner_prediction($jsonPath, $replicateResponse, $aiCorners['offset_percent'] ?? 1.0);
+            if (!$processResult['ok']) {
+                return ['ok' => false, 'error' => 'Failed to process Replicate response: ' . ($processResult['error'] ?? 'Unknown')];
+            }
+            // Reload meta to get updated corners_used
+            $meta = load_meta($imageFilename, $imagesDir);
+            $aiCorners = $meta['ai_corners'] ?? [];
+            $cornersUsed = $aiCorners['corners_used'] ?? null;
+        }
+        
         if ($cornersUsed && is_array($cornersUsed) && count($cornersUsed) === 4) {
-            // Check if final image exists
-            $finalImage = null;
+            // Regenerate final image using the completed corners
+            $originalImage = null;
             $files = scandir($imagesDir) ?: [];
             foreach ($files as $file) {
                 if ($file === '.' || $file === '..') continue;
                 $fileStem = pathinfo($file, PATHINFO_FILENAME);
-                if (strpos($fileStem, $baseName.'_final') === 0) {
-                    $finalImage = $imagesDir . '/' . $file;
+                if (strpos($fileStem, $baseName.'_original') === 0) {
+                    $originalImage = $imagesDir . '/' . $file;
                     break;
                 }
             }
             
-            if (!$finalImage || !is_file($finalImage)) {
-                // Corners are completed but final image doesn't exist - create it
-                $originalImage = null;
-                foreach ($files as $file) {
-                    if ($file === '.' || $file === '..') continue;
-                    $fileStem = pathinfo($file, PATHINFO_FILENAME);
-                    if (strpos($fileStem, $baseName.'_original') === 0) {
-                        $originalImage = $imagesDir . '/' . $file;
-                        break;
-                    }
-                }
-                
-                if (!$originalImage || !is_file($originalImage)) {
-                    return ['ok' => false, 'error' => 'Original image not found'];
-                }
-                
-                // Process the corners to create final image
-                // calculate_corners() will use the cached succeeded response
-                require_once __DIR__ . '/ai_image_by_corners.php';
-                $imagePath = 'admin/images/' . basename($originalImage);
-                $result = process_ai_image_by_corners($imagePath, $aiCorners['offset_percent'] ?? 1.0);
-                
-                if ($result['ok']) {
-                    return ['ok' => true, 'result' => $result, 'message' => 'Final image created'];
-                } else {
-                    return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
-                }
+            if (!$originalImage || !is_file($originalImage)) {
+                return ['ok' => false, 'error' => 'Original image not found'];
             }
             
-            // Final image already exists - nothing to do
-            return ['ok' => true, 'skipped' => true, 'message' => 'Final image already exists'];
+            // Process the corners to regenerate final image
+            require_once __DIR__ . '/ai_image_by_corners.php';
+            $imagePath = 'admin/images/' . basename($originalImage);
+            $result = process_ai_image_by_corners($imagePath, $aiCorners['offset_percent'] ?? 1.0);
+            
+            if ($result['ok']) {
+                // Clear the flag and set status to completed after successful generation
+                $aiCorners['image_generation_needed'] = false;
+                $aiCorners['status'] = 'completed';
+                update_json_file($jsonPath, ['ai_corners' => $aiCorners], false);
+                return ['ok' => true, 'result' => $result, 'message' => 'Final image regenerated'];
+            } else {
+                return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
+            }
         }
     }
     
@@ -439,6 +447,223 @@ function process_ai_form(string $baseName, string $jsonPath): array {
         update_task_status($jsonPath, 'ai_form', 'wanted'); // Retry
         return ['ok' => false, 'error' => $e->getMessage()];
     }
+}
+
+/**
+ * Poll and process AI painting variants generation (background task handler)
+ */
+function poll_ai_painting_variants(string $baseName, string $jsonPath): array {
+    $imagesDir = __DIR__ . '/images';
+    
+    // Load metadata to check for painting variants status
+    $imageFilename = basename($jsonPath, '.json');
+    $meta = load_meta($imageFilename, $imagesDir);
+    
+    $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+    $status = $aiPaintingVariants['status'] ?? null;
+    $variants = $aiPaintingVariants['variants'] ?? [];
+    
+    // Check if status is in_progress and has variants to poll
+    if ($status === 'in_progress' && !empty($variants)) {
+        $allCompleted = true;
+        $anyInProgress = false;
+        
+        foreach ($variants as $variantName => $variantInfo) {
+            $variantStatus = $variantInfo['status'] ?? null;
+            $predictionUrl = $variantInfo['prediction_url'] ?? null;
+            
+            if ($variantStatus === 'in_progress' && $predictionUrl) {
+                // Poll this variant directly from Replicate API
+                try {
+                    $TOKEN = load_replicate_token();
+                } catch (RuntimeException $e) {
+                    $anyInProgress = true;
+                    continue;
+                }
+                
+                // Make single GET request to check status
+                $ch = curl_init($predictionUrl);
+                curl_setopt_array($ch, [
+                    CURLOPT_HTTPHEADER => ["Authorization: Token $TOKEN"],
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => 30
+                ]);
+                
+                $res = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $err = curl_error($ch);
+                curl_close($ch);
+                
+                if ($res === false || $httpCode >= 400) {
+                    // Network error - keep status as in_progress, retry next run
+                    $anyInProgress = true;
+                    continue;
+                }
+                
+                $resp = json_decode($res, true);
+                if (!is_array($resp)) {
+                    $anyInProgress = true;
+                    continue;
+                }
+                
+                $predictionStatus = $resp['status'] ?? 'unknown';
+                
+                // Update variant info with latest response
+                $variants[$variantName]['prediction_status'] = $predictionStatus;
+                $variants[$variantName]['replicate_response_raw'] = json_encode($resp, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                $variants[$variantName]['replicate_response'] = $resp;
+                $variants[$variantName]['timestamp'] = date('c');
+                
+                if ($predictionStatus === 'succeeded') {
+                    // Process completed prediction
+                    $targetPath = $variantInfo['target_path'] ?? null;
+                    if ($targetPath && is_string($targetPath)) {
+                        // Extract image from response
+                        require_once __DIR__ . '/utils.php';
+                        $imgBytes = fetch_image_bytes($resp['output'] ?? null);
+                        if ($imgBytes === null) {
+                            if (is_array($resp['output']) && isset($resp['output']['images'][0])) {
+                                $imgBytes = fetch_image_bytes($resp['output']['images'][0]);
+                            }
+                        }
+                        
+                        if ($imgBytes !== null) {
+                            // Ensure target directory exists
+                            $targetDir = dirname($targetPath);
+                            if (!is_dir($targetDir)) {
+                                mkdir($targetDir, 0755, true);
+                            }
+                            
+                            file_put_contents($targetPath, $imgBytes);
+                            
+                            // Generate thumbnail
+                            $thumbPath = generate_thumbnail_path($targetPath);
+                            generate_thumbnail($targetPath, $thumbPath, 512, 1024);
+                            
+                            // Mark as completed
+                            $variants[$variantName]['status'] = 'completed';
+                            $variants[$variantName]['completed_at'] = date('c');
+                        } else {
+                            // Failed to extract image
+                            $variants[$variantName]['status'] = 'wanted';
+                            $allCompleted = false;
+                        }
+                    } else {
+                        // No target path
+                        $variants[$variantName]['status'] = 'wanted';
+                        $allCompleted = false;
+                    }
+                } elseif ($predictionStatus === 'failed' || $predictionStatus === 'canceled') {
+                    // Prediction failed - set status to wanted for retry
+                    $variants[$variantName]['status'] = 'wanted';
+                    $allCompleted = false;
+                } else {
+                    // Still processing
+                    $anyInProgress = true;
+                }
+            } elseif ($variantStatus === 'completed') {
+                // Already completed
+            } else {
+                $allCompleted = false;
+                if ($variantStatus === 'in_progress') {
+                    $anyInProgress = true;
+                }
+            }
+        }
+        
+        // Update painting metadata
+        $aiPaintingVariants['variants'] = $variants;
+        if ($allCompleted) {
+            $aiPaintingVariants['status'] = 'completed';
+            $aiPaintingVariants['completed_at'] = date('c');
+            $aiPaintingVariants['image_generation_needed'] = false;
+        }
+        update_json_file($jsonPath, ['ai_painting_variants' => $aiPaintingVariants], false);
+        
+        if ($anyInProgress) {
+            return ['ok' => true, 'still_processing' => true, 'message' => 'Variants still in progress'];
+        }
+        
+        if ($allCompleted) {
+            return ['ok' => true, 'completed' => true, 'message' => 'All variants completed'];
+        }
+    }
+    
+    // Check if status is wanted or not set - start new generation
+    if ($status !== 'in_progress' && $status !== 'completed') {
+        require_once __DIR__ . '/ai_painting_variants.php';
+        $result = process_ai_painting_variants($baseName);
+        
+        if ($result['ok']) {
+            if ($result['started'] > 0) {
+                return ['ok' => true, 'started' => true, 'message' => 'Started variant generation'];
+            } else {
+                return ['ok' => true, 'skipped' => true, 'message' => 'No variants to generate'];
+            }
+        } else {
+            return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
+        }
+    }
+    
+    return ['ok' => true, 'skipped' => true, 'message' => 'No action needed'];
+}
+
+/**
+ * Process individual variant predictions (from variants/ directory)
+ */
+function process_individual_variants(): array {
+    $variantsDir = __DIR__ . '/variants';
+    if (!is_dir($variantsDir)) {
+        return ['ok' => true, 'processed' => 0, 'message' => 'Variants directory not found'];
+    }
+    
+    $files = scandir($variantsDir) ?: [];
+    $processed = 0;
+    $errors = [];
+    
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') continue;
+        if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
+        
+        $variantJsonPath = $variantsDir . '/' . $file;
+        $variantMeta = [];
+        if (is_file($variantJsonPath)) {
+            $content = @file_get_contents($variantJsonPath);
+            if ($content !== false) {
+                $decoded = json_decode($content, true);
+                if (is_array($decoded)) {
+                    $variantMeta = $decoded;
+                }
+            }
+        }
+        
+        $status = $variantMeta['status'] ?? null;
+        $predictionUrl = $variantMeta['prediction_url'] ?? null;
+        
+        // Only process variants that are in_progress and have a prediction URL
+        if ($status === 'in_progress' && $predictionUrl) {
+            require_once __DIR__ . '/ai_variant_by_prompt.php';
+            $pollResult = poll_variant_prediction($variantJsonPath);
+            
+            if (isset($pollResult['completed']) && $pollResult['completed']) {
+                $processed++;
+            } elseif (isset($pollResult['still_processing']) && $pollResult['still_processing']) {
+                // Still processing - skip for now
+                continue;
+            } else {
+                $errors[] = [
+                    'variant' => $variantMeta['variant_name'] ?? $file,
+                    'error' => $pollResult['error'] ?? 'Unknown error'
+                ];
+            }
+        }
+    }
+    
+    return [
+        'ok' => true,
+        'processed' => $processed,
+        'errors' => $errors
+    ];
 }
 
 /**
@@ -945,6 +1170,95 @@ foreach ($jsonFiles as $item) {
             'image' => $imageFile ?? $baseName . '_final.jpg',
             'ai_task' => 'form_filling'
         ];
+    }
+}
+
+// ============================================
+// PHASE 2.5: Process AI painting variants
+// ============================================
+error_log('[Background Tasks] === PHASE 2.5: Processing AI painting variants ===');
+foreach ($jsonFiles as $item) {
+    if ($processedCount >= $maxProcessPerRun) {
+        error_log('[Background Tasks] Processing limit reached (' . $maxProcessPerRun . '), stopping phase 2.5');
+        break;
+    }
+    
+    $baseName = $item['baseName'];
+    $jsonPath = $item['jsonPath'];
+    $meta = $item['meta'];
+    
+    // Reload meta to get latest status
+    $imageFilename = basename($jsonPath, '.json');
+    $meta = load_meta($imageFilename, $imagesDir);
+    
+    $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+    $status = $aiPaintingVariants['status'] ?? null;
+    
+    // Skip if not in_progress or wanted
+    if ($status !== 'in_progress' && $status !== 'wanted' && $status !== null) {
+        continue;
+    }
+    
+    error_log('[Background Tasks] ' . $baseName . ': Processing AI painting variants (status: ' . ($status ?? 'null') . ')');
+    $result = poll_ai_painting_variants($baseName, $jsonPath);
+    
+    if ($result['ok']) {
+        if (isset($result['still_processing']) && $result['still_processing']) {
+            error_log('[Background Tasks] ' . $baseName . ': AI painting variants still processing, will check again next run');
+            $results['skipped'][] = [
+                'base' => $baseName,
+                'task' => 'ai_painting_variants',
+                'reason' => 'still_processing'
+            ];
+            continue;
+        }
+        if (isset($result['completed']) && $result['completed']) {
+            error_log('[Background Tasks] ' . $baseName . ': AI painting variants completed successfully');
+            $results['processed'][] = [
+                'base' => $baseName,
+                'task' => 'ai_painting_variants',
+                'status' => 'success'
+            ];
+            $processedCount++;
+        } elseif (isset($result['started']) && $result['started']) {
+            error_log('[Background Tasks] ' . $baseName . ': AI painting variants started (' . $result['started'] . ' variants)');
+            $results['processed'][] = [
+                'base' => $baseName,
+                'task' => 'ai_painting_variants',
+                'status' => 'started',
+                'started' => $result['started']
+            ];
+        }
+    } else {
+        error_log('[Background Tasks] ' . $baseName . ': AI painting variants failed: ' . ($result['error'] ?? 'Unknown error'));
+        $results['errors'][] = [
+            'base' => $baseName,
+            'task' => 'ai_painting_variants',
+            'error' => $result['error']
+        ];
+    }
+}
+
+// ============================================
+// PHASE 2.6: Process individual variant predictions
+// ============================================
+error_log('[Background Tasks] === PHASE 2.6: Processing individual variant predictions ===');
+$variantResult = process_individual_variants();
+if ($variantResult['ok'] && $variantResult['processed'] > 0) {
+    error_log('[Background Tasks] Processed ' . $variantResult['processed'] . ' individual variant(s)');
+    $results['processed'][] = [
+        'task' => 'individual_variants',
+        'status' => 'success',
+        'processed' => $variantResult['processed']
+    ];
+    if (!empty($variantResult['errors'])) {
+        foreach ($variantResult['errors'] as $error) {
+            $results['errors'][] = [
+                'task' => 'individual_variants',
+                'error' => $error['error'],
+                'variant' => $error['variant']
+            ];
+        }
     }
 }
 

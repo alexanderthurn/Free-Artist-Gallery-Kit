@@ -109,6 +109,7 @@
       <a href="index.html" style="color: #555; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #888; border-radius: 6px;">Gemälde</a>
       <a href="variants.html" style="color: #555; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #888; border-radius: 6px;">Raum-Mockups</a>
       <a href="artist.html" style="color: #555; text-decoration: none; font-size: 14px; padding: 6px 12px; border: 1px solid #888; border-radius: 6px; background: #f5f5f5;">Künstler</a>
+      <button id="bgTasksBtn" style="font-size: 10px; padding: 4px 8px; border: 1px solid #888; border-radius: 4px; background: #fff; color: #555; cursor: pointer; position: relative;" title="Background Tasks">B</button>
     </div>
   </div>
 
@@ -1359,6 +1360,90 @@
         btn.textContent = force ? 'Bilder neu generieren' : 'Bilder optimieren';
       }
     }
+    
+    // Background Tasks Utility
+    async function processBackgroundTasks() {
+      try {
+        const formData = new FormData();
+        formData.set('async', '0');
+        
+        const res = await fetch('process_background_tasks.php', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        
+        const data = await res.json();
+        return data;
+      } catch (error) {
+        console.error('Background tasks error:', error);
+        throw error;
+      }
+    }
+    
+    async function getBackgroundTasksPreview() {
+      try {
+        const res = await fetch('process_background_tasks.php?preview=1');
+        if (!res.ok) return null;
+        return await res.json();
+      } catch (error) {
+        console.error('Preview error:', error);
+        return null;
+      }
+    }
+    
+    // Setup background tasks button
+    (function() {
+      const btn = document.getElementById('bgTasksBtn');
+      if (!btn) return;
+      
+      let previewTimeout;
+      let previewDiv = null;
+      
+      btn.addEventListener('mouseenter', async function() {
+        previewTimeout = setTimeout(async () => {
+          const preview = await getBackgroundTasksPreview();
+          if (!preview || !preview.summary) return;
+          
+          previewDiv = document.createElement('div');
+          previewDiv.style.cssText = 'position: absolute; top: 100%; right: 0; margin-top: 4px; background: #fff; border: 1px solid #888; border-radius: 6px; padding: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; min-width: 200px; font-size: 12px; white-space: nowrap;';
+          previewDiv.innerHTML = `
+            <div style="font-weight: 600; margin-bottom: 8px; color: #333;">Background Tasks</div>
+            <div style="color: #666;">Variants: ${preview.summary.variants || 0}</div>
+            <div style="color: #666;">AI: ${preview.summary.ai || 0}</div>
+            <div style="color: #666;">Gallery: ${preview.summary.gallery || 0}</div>
+          `;
+          btn.style.position = 'relative';
+          btn.parentElement.style.position = 'relative';
+          btn.parentElement.appendChild(previewDiv);
+        }, 300);
+      });
+      
+      btn.addEventListener('mouseleave', function() {
+        clearTimeout(previewTimeout);
+        if (previewDiv && previewDiv.parentElement) {
+          previewDiv.parentElement.removeChild(previewDiv);
+          previewDiv = null;
+        }
+      });
+      
+      btn.addEventListener('click', async function() {
+        btn.disabled = true;
+        btn.textContent = '...';
+        try {
+          const result = await processBackgroundTasks();
+          showToast(`Background tasks processed: ${result.processed?.length || 0} processed, ${result.errors?.length || 0} errors`, result.ok ? 'success' : 'error');
+        } catch (error) {
+          showToast('Fehler beim Verarbeiten der Background Tasks', 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'B';
+        }
+      });
+    })();
   </script>
 </body>
 </html>

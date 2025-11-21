@@ -51,6 +51,9 @@ if ($isDirectCall) {
       case 'copy_to_image':
         handleCopyToImage();
         break;
+      case 'regenerate':
+        handleRegenerate();
+        break;
       default:
         http_response_code(400);
         echo json_encode(['ok' => false, 'error'=>'unknown action']);
@@ -117,22 +120,113 @@ function handleCheckName() {
 function handleList() {
   global $variantsDir;
   $files = [];
+  $processedNames = []; // Track which variant names we've already added
+  
   if (is_dir($variantsDir)) {
     $items = scandir($variantsDir) ?: [];
+    
+    // First, process image files
     foreach ($items as $item) {
       if ($item === '.' || $item === '..') continue;
       $path = $variantsDir . '/' . $item;
       if (!is_file($path)) continue;
       $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
       if (!in_array($ext, ['jpg','jpeg'])) continue;
+      
+      $baseName = pathinfo($item, PATHINFO_FILENAME);
+      $jsonPath = $variantsDir . '/' . $baseName . '.json';
+      
+      $status = null;
+      $prediction_url = null;
+      if (is_file($jsonPath)) {
+        $jsonContent = @file_get_contents($jsonPath);
+        if ($jsonContent !== false) {
+          $jsonData = json_decode($jsonContent, true);
+          if (is_array($jsonData)) {
+            $status = $jsonData['status'] ?? null;
+            $prediction_url = $jsonData['prediction_url'] ?? null;
+          }
+        }
+      }
+      
+      $processedNames[] = $baseName;
+      $prompt = null;
+      $type = null;
+      if (is_file($jsonPath)) {
+        $jsonContent = @file_get_contents($jsonPath);
+        if ($jsonContent !== false) {
+          $jsonData = json_decode($jsonContent, true);
+          if (is_array($jsonData)) {
+            $type = $jsonData['type'] ?? null;
+            // Only use prompt for template variants (type === 'template')
+            // For template variants, prompt is the original user prompt
+            if ($type === 'template') {
+              $prompt = $jsonData['prompt'] ?? null;
+            }
+          }
+        }
+      }
+      
       $files[] = [
         'name' => $item,
         'url' => '/admin/variants/' . rawurlencode($item),
         'mtime' => filemtime($path),
-        'size' => filesize($path)
+        'size' => filesize($path),
+        'status' => $status,
+        'prediction_url' => $prediction_url,
+        'pending' => false,
+        'prompt' => $prompt,
+        'type' => $type
       ];
     }
+    
+    // Then, process JSON files for in-progress variants without image files
+    foreach ($items as $item) {
+      if ($item === '.' || $item === '..') continue;
+      $path = $variantsDir . '/' . $item;
+      if (!is_file($path)) continue;
+      $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
+      if ($ext !== 'json') continue;
+      
+      $baseName = pathinfo($item, PATHINFO_FILENAME);
+      
+      // Skip if we already processed this variant (it has an image file)
+      if (in_array($baseName, $processedNames)) continue;
+      
+      $jsonContent = @file_get_contents($path);
+      if ($jsonContent === false) continue;
+      
+      $jsonData = json_decode($jsonContent, true);
+      if (!is_array($jsonData)) continue;
+      
+      $status = $jsonData['status'] ?? null;
+      $prediction_url = $jsonData['prediction_url'] ?? null;
+      $filename = $jsonData['filename'] ?? ($baseName . '.jpg');
+      
+      // Only include if in_progress or wanted (pending)
+      if ($status === 'in_progress' || $status === 'wanted') {
+        $type = $jsonData['type'] ?? null;
+        $prompt = null;
+        // Only use prompt for template variants
+        if ($type === 'template') {
+          $prompt = $jsonData['prompt'] ?? null;
+        }
+        $files[] = [
+          'name' => $filename,
+          'url' => null, // No image file yet
+          'mtime' => isset($jsonData['started_at']) ? strtotime($jsonData['started_at']) : filemtime($path),
+          'size' => 0,
+          'status' => $status,
+          'prediction_url' => $prediction_url,
+          'pending' => true,
+          'variant_name' => $jsonData['variant_name'] ?? $baseName,
+          'prompt' => $prompt,
+          'type' => $type
+        ];
+      }
+    }
   }
+  
   // Sort by mtime desc
   usort($files, function($a, $b) {
     return $b['mtime'] - $a['mtime'];
@@ -175,53 +269,30 @@ function handleGenerate() {
     exit;
   }
   
-  // ---- Text-to-Image Generation with Nano Banana ----
-  // Using the same model version as corners.php, but for text-to-image generation
-  $VERSION = '2784c5d54c07d79b0a2a5385477038719ad37cb0745e61bbddf2fc236d196a6b';
+  // Use async variant template generation
+  require_once __DIR__ . '/ai_variant_by_prompt.php';
   
-  $promptFinal = <<<PROMPT
-  Erzeuge ein neues, fotorealistisches Bild eines Raumes. 
-  Der Raum soll neutral gestaltet sein, die Deckenhöhe soll 2,5m sein. Der Raum soll genügend freie glatte Wandfläche bieten. Es darf kein Bild irgendwo hängen.
-  Achte auf natürliche Beleuchtung und klare Linien.
+  $variantBaseName = pathinfo($filename, PATHINFO_FILENAME);
+  $result = generate_variant_template_async($variantBaseName, $prompt, $filepath);
   
-  Raumbeschreibung des Nutzers:
-  $prompt
-  PROMPT;
-
-
-  // Try with nano banana model (same version as corners.php)
-  try {
-    $payload = [
-      'version' => $VERSION,
-      'input' => [
-        'prompt' => $promptFinal,
-        'output_format' => 'jpg'
-      ]
-    ];
-    $result = replicate_call_version($TOKEN, $VERSION, $payload);
-  } catch (Exception $e) {
+  if (!$result['ok']) {
     http_response_code(502);
-    echo json_encode(['ok' => false, 'error' => 'replicate_failed', 'detail' => $e->getMessage()]);
+    echo json_encode([
+      'ok' => false,
+      'error' => $result['error'] ?? 'generation_failed',
+      'detail' => $result['detail'] ?? 'Unknown error'
+    ]);
     exit;
   }
   
-  // Extract image from result
-  $imgBytes = fetch_image_bytes($result['output'] ?? null);
-  if ($imgBytes === null) {
-    http_response_code(502);
-    echo json_encode(['ok' => false, 'error'=>'failed_to_extract_image', 'response' => $result]);
-    exit;
-  }
-  
-  
-  file_put_contents($filepath, $imgBytes);
-  
+  // Return immediately - JSON file is already created with in_progress status
   echo json_encode([
     'ok' => true,
+    'prediction_started' => true,
     'filename' => $filename,
-    'url' => '/admin/variants/' . rawurlencode($filename),
-    'prompt' => $prompt,
-    'replaced' => is_file($filepath) && $replace
+    'variant_name' => $variantBaseName,
+    'prediction_url' => $result['prediction_url'] ?? null,
+    'message' => 'Variant generation started, will be processed by background task'
   ]);
 }
 
@@ -304,27 +375,50 @@ function handleRename() {
     exit;
   }
   
-  // Security: only allow renaming files in variants directory
+  $oldBaseName = pathinfo($oldFilename, PATHINFO_FILENAME);
   $oldFilepath = $variantsDir . '/' . basename($oldFilename);
-  if (strpos(realpath($oldFilepath), realpath($variantsDir)) !== 0) {
-    http_response_code(403);
-    echo json_encode(['ok' => false, 'error'=>'invalid path']);
-    exit;
-  }
+  $oldJsonPath = $variantsDir . '/' . $oldBaseName . '.json';
   
-  if (!is_file($oldFilepath)) {
+  // Check if image file exists
+  $imageExists = is_file($oldFilepath);
+  // Check if JSON file exists (for pending variants)
+  $jsonExists = is_file($oldJsonPath);
+  
+  if (!$imageExists && !$jsonExists) {
     http_response_code(404);
     echo json_encode(['ok' => false, 'error'=>'file not found']);
     exit;
   }
   
-  // Always use JPG extension
+  // Validate paths
+  $variantsDirReal = realpath($variantsDir);
+  if ($imageExists) {
+    $oldFilepathReal = realpath($oldFilepath);
+    if ($oldFilepathReal === false || strpos($oldFilepathReal, $variantsDirReal) !== 0) {
+      http_response_code(403);
+      echo json_encode(['ok' => false, 'error'=>'invalid path']);
+      exit;
+    }
+  }
+  
+  if ($jsonExists) {
+    $oldJsonPathReal = realpath($oldJsonPath);
+    if ($oldJsonPathReal === false || strpos($oldJsonPathReal, $variantsDirReal) !== 0) {
+      http_response_code(403);
+      echo json_encode(['ok' => false, 'error'=>'invalid json path']);
+      exit;
+    }
+  }
+  
+  // Always use JPG extension for image filename
   $newFilename = sanitizeFilename($newName);
-  
+  $newBaseName = pathinfo($newFilename, PATHINFO_FILENAME);
   $newFilepath = $variantsDir . '/' . $newFilename;
+  $newJsonPath = $variantsDir . '/' . $newBaseName . '.json';
   
-  // Check if new name already exists
-  if (is_file($newFilepath) && $newFilepath !== $oldFilepath) {
+  // Check if new name already exists (image or JSON)
+  if (($imageExists && is_file($newFilepath) && $newFilepath !== $oldFilepath) ||
+      ($jsonExists && is_file($newJsonPath) && $newJsonPath !== $oldJsonPath)) {
     http_response_code(409);
     echo json_encode([
       'ok' => false,
@@ -334,17 +428,45 @@ function handleRename() {
     exit;
   }
   
-  if (!rename($oldFilepath, $newFilepath)) {
-    http_response_code(500);
-    echo json_encode(['ok' => false, 'error'=>'failed to rename']);
-    exit;
+  // Rename image file if it exists
+  if ($imageExists) {
+    if (!rename($oldFilepath, $newFilepath)) {
+      http_response_code(500);
+      echo json_encode(['ok' => false, 'error'=>'failed to rename image']);
+      exit;
+    }
+  }
+  
+  // Handle JSON file rename/update
+  if ($jsonExists) {
+    // Update variant_name in JSON if renaming
+    $jsonContent = @file_get_contents($oldJsonPath);
+    if ($jsonContent !== false) {
+      $jsonData = json_decode($jsonContent, true);
+      if (is_array($jsonData)) {
+        $jsonData['variant_name'] = $newBaseName;
+        $jsonData['filename'] = $newFilename;
+        require_once __DIR__ . '/meta.php';
+        update_json_file($newJsonPath, $jsonData, false);
+        // Delete old JSON if rename was successful
+        if (is_file($newJsonPath)) {
+          @unlink($oldJsonPath);
+        }
+      } else {
+        // If JSON is invalid, just rename the file
+        @rename($oldJsonPath, $newJsonPath);
+      }
+    } else {
+      // If we can't read it, just try to rename
+      @rename($oldJsonPath, $newJsonPath);
+    }
   }
   
   echo json_encode([
     'ok' => true,
     'old_filename' => $oldFilename,
     'new_filename' => $newFilename,
-    'url' => '/admin/variants/' . rawurlencode($newFilename)
+    'url' => $imageExists ? '/admin/variants/' . rawurlencode($newFilename) : null
   ]);
 }
 
@@ -358,27 +480,141 @@ function handleDelete() {
     exit;
   }
   
+  $baseName = pathinfo($filename, PATHINFO_FILENAME);
+  
   // Security: only allow deleting files in variants directory
   $filepath = $variantsDir . '/' . basename($filename);
-  if (strpos(realpath($filepath), realpath($variantsDir)) !== 0) {
-    http_response_code(403);
-    echo json_encode(['ok' => false, 'error'=>'invalid path']);
-    exit;
-  }
+  $jsonPath = $variantsDir . '/' . $baseName . '.json';
   
-  if (!is_file($filepath)) {
+  // Check if image file exists
+  $imageExists = is_file($filepath);
+  // Check if JSON file exists
+  $jsonExists = is_file($jsonPath);
+  
+  if (!$imageExists && !$jsonExists) {
     http_response_code(404);
     echo json_encode(['ok' => false, 'error'=>'file not found']);
     exit;
   }
   
-  if (!unlink($filepath)) {
-    http_response_code(500);
-    echo json_encode(['ok' => false, 'error'=>'failed to delete']);
-    exit;
+  // Validate paths
+  $variantsDirReal = realpath($variantsDir);
+  if ($imageExists) {
+    $filepathReal = realpath($filepath);
+    if ($filepathReal === false || strpos($filepathReal, $variantsDirReal) !== 0) {
+      http_response_code(403);
+      echo json_encode(['ok' => false, 'error'=>'invalid path']);
+      exit;
+    }
+  }
+  
+  if ($jsonExists) {
+    $jsonPathReal = realpath($jsonPath);
+    if ($jsonPathReal === false || strpos($jsonPathReal, $variantsDirReal) !== 0) {
+      http_response_code(403);
+      echo json_encode(['ok' => false, 'error'=>'invalid json path']);
+      exit;
+    }
+  }
+  
+  // Delete image file if it exists
+  if ($imageExists) {
+    if (!unlink($filepath)) {
+      http_response_code(500);
+      echo json_encode(['ok' => false, 'error'=>'failed to delete image']);
+      exit;
+    }
+  }
+  
+  // Delete JSON file if it exists
+  if ($jsonExists) {
+    if (!unlink($jsonPath)) {
+      http_response_code(500);
+      echo json_encode(['ok' => false, 'error'=>'failed to delete json']);
+      exit;
+    }
   }
   
   echo json_encode(['ok' => true, 'filename' => $filename]);
+}
+
+function handleRegenerate() {
+  global $variantsDir;
+  
+  $filename = trim($_POST['filename'] ?? '');
+  $prompt = trim($_POST['prompt'] ?? '');
+  
+  if ($filename === '') {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error'=>'filename required']);
+    exit;
+  }
+  
+  if ($prompt === '') {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error'=>'prompt required']);
+    exit;
+  }
+  
+  $baseName = pathinfo($filename, PATHINFO_FILENAME);
+  $filepath = $variantsDir . '/' . basename($filename);
+  $jsonPath = $variantsDir . '/' . $baseName . '.json';
+  
+  // Security: only allow regenerating files in variants directory
+  $variantsDirReal = realpath($variantsDir);
+  
+  // Delete image file if it exists
+  if (is_file($filepath)) {
+    $filepathReal = realpath($filepath);
+    if ($filepathReal === false || strpos($filepathReal, $variantsDirReal) !== 0) {
+      http_response_code(403);
+      echo json_encode(['ok' => false, 'error'=>'invalid path']);
+      exit;
+    }
+    if (!unlink($filepath)) {
+      http_response_code(500);
+      echo json_encode(['ok' => false, 'error'=>'failed to delete image']);
+      exit;
+    }
+  }
+  
+  // Delete JSON file if it exists
+  if (is_file($jsonPath)) {
+    $jsonPathReal = realpath($jsonPath);
+    if ($jsonPathReal === false || strpos($jsonPathReal, $variantsDirReal) !== 0) {
+      http_response_code(403);
+      echo json_encode(['ok' => false, 'error'=>'invalid json path']);
+      exit;
+    }
+    if (!unlink($jsonPath)) {
+      http_response_code(500);
+      echo json_encode(['ok' => false, 'error'=>'failed to delete json']);
+      exit;
+    }
+  }
+  
+  // Start new generation with the provided prompt
+  require_once __DIR__ . '/ai_variant_by_prompt.php';
+  $result = generate_variant_template_async($baseName, $prompt, $filepath);
+  
+  if (!$result['ok']) {
+    http_response_code(502);
+    echo json_encode([
+      'ok' => false,
+      'error' => $result['error'] ?? 'generation_failed',
+      'detail' => $result['detail'] ?? 'Unknown error'
+    ]);
+    exit;
+  }
+  
+  echo json_encode([
+    'ok' => true,
+    'prediction_started' => true,
+    'filename' => $filename,
+    'variant_name' => $baseName,
+    'prediction_url' => $result['prediction_url'] ?? null,
+    'message' => 'Variant regeneration started, will be processed by background task'
+  ]);
 }
 
 function handleCopyToImage() {

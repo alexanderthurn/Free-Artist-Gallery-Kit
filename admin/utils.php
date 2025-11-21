@@ -928,6 +928,28 @@ function is_task_in_progress(array $meta, string $taskType, int $maxMinutes = 10
         return $elapsedMinutes < $maxMinutes;
     }
     
+    if ($taskType === 'ai_painting_variants') {
+        $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+        $status = $aiPaintingVariants['status'] ?? null;
+        $startedAt = $aiPaintingVariants['started_at'] ?? null;
+        
+        if ($status !== 'in_progress') {
+            return false;
+        }
+        
+        if ($startedAt === null) {
+            return false; // No start time, consider stale
+        }
+        
+        $startTime = strtotime($startedAt);
+        if ($startTime === false) {
+            return false; // Invalid timestamp
+        }
+        
+        $elapsedMinutes = (time() - $startTime) / 60;
+        return $elapsedMinutes < $maxMinutes;
+    }
+    
     return false;
 }
 
@@ -970,11 +992,13 @@ function get_pending_tasks_count(string $imagesDir): array {
             $counts['variants']++;
         }
         
-        // Check AI generation (corners and form separately)
+        // Check AI generation (corners, form, and painting variants separately)
         $aiCorners = $meta['ai_corners'] ?? [];
         $aiFillForm = $meta['ai_fill_form'] ?? [];
+        $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
         $cornersStatus = $aiCorners['status'] ?? null;
         $formStatus = $aiFillForm['status'] ?? null;
+        $paintingVariantsStatus = $aiPaintingVariants['status'] ?? null;
         
         // Count corners tasks: wanted OR in_progress (including those with prediction_url waiting for async completion)
         if ($cornersStatus === 'wanted') {
@@ -1000,10 +1024,53 @@ function get_pending_tasks_count(string $imagesDir): array {
             }
         }
         
+        // Count painting variants tasks: wanted OR in_progress (including those with variants having prediction_url)
+        if ($paintingVariantsStatus === 'wanted') {
+            $counts['ai']++;
+        } elseif ($paintingVariantsStatus === 'in_progress') {
+            // Check if any variant has a prediction_url (actively processing)
+            $variants = $aiPaintingVariants['variants'] ?? [];
+            $hasActiveVariants = false;
+            foreach ($variants as $variantInfo) {
+                if (isset($variantInfo['prediction_url']) && is_string($variantInfo['prediction_url'])) {
+                    $hasActiveVariants = true;
+                    break;
+                }
+            }
+            if ($hasActiveVariants || !is_task_in_progress($meta, 'ai_painting_variants')) {
+                $counts['ai']++;
+            }
+        }
+        
         // Check gallery publishing (simplified - would need more complex logic)
         // This is a placeholder - actual check would compare file times
         if (isset($meta['live']) && $meta['live'] === true) {
             $counts['gallery']++;
+        }
+    }
+    
+    // Check individual variant predictions in variants/ directory
+    $variantsDir = dirname($imagesDir) . '/admin/variants';
+    if (is_dir($variantsDir)) {
+        $variantFiles = scandir($variantsDir) ?: [];
+        foreach ($variantFiles as $file) {
+            if ($file === '.' || $file === '..') continue;
+            if (pathinfo($file, PATHINFO_EXTENSION) !== 'json') continue;
+            
+            $variantJsonPath = $variantsDir . '/' . $file;
+            $content = @file_get_contents($variantJsonPath);
+            if ($content === false) continue;
+            
+            $variantMeta = json_decode($content, true);
+            if (!is_array($variantMeta)) continue;
+            
+            $status = $variantMeta['status'] ?? null;
+            $predictionUrl = $variantMeta['prediction_url'] ?? null;
+            
+            // Count if in_progress and has prediction_url
+            if ($status === 'in_progress' && $predictionUrl && is_string($predictionUrl)) {
+                $counts['ai']++;
+            }
         }
     }
     
@@ -1083,6 +1150,36 @@ function update_task_status(string $jsonPath, string $taskType, string $status, 
             $aiFillForm['started_at'] = null;
         }
         $updates['ai_fill_form'] = $aiFillForm;
+    } elseif ($taskType === 'ai_painting_variants') {
+        // Load existing ai_painting_variants object to preserve other fields
+        $existingMeta = [];
+        if (is_file($jsonPath)) {
+            $content = @file_get_contents($jsonPath);
+            if ($content !== false) {
+                $decoded = json_decode($content, true);
+                if (is_array($decoded)) {
+                    $existingMeta = $decoded;
+                }
+            }
+        }
+        $existingAiPaintingVariants = $existingMeta['ai_painting_variants'] ?? [];
+        
+        $aiPaintingVariants = $existingAiPaintingVariants;
+        $aiPaintingVariants['status'] = $status;
+        if ($status === 'in_progress') {
+            $aiPaintingVariants['started_at'] = $startedAt ?? date('c');
+        } elseif ($status === 'completed') {
+            $aiPaintingVariants['completed_at'] = date('c');
+            // Keep started_at for history
+        } elseif ($status === 'wanted') {
+            // Clear started_at when resetting to wanted
+            $aiPaintingVariants['started_at'] = null;
+        }
+        $updates['ai_painting_variants'] = $aiPaintingVariants;
+    }
+    
+    if (empty($updates)) {
+        return false;
     }
     
     return update_json_file($jsonPath, $updates, false);

@@ -311,8 +311,7 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
     // Step 8: Update AI corners status to completed
     update_task_status($metaPath, 'ai_corners', 'completed');
     
-    // Step 9: Set variant regeneration flag (will be processed by background task processor)
-    update_json_file($metaPath, ['variant_regeneration_status' => 'needed'], false);
+    // Step 9: Variants are not automatically regenerated - they must be explicitly requested
     
     // Check if image is in gallery
     $galleryDir = dirname(__DIR__) . '/img/gallery/';

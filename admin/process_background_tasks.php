@@ -83,8 +83,9 @@ function check_variant_regeneration_needed(string $baseName, string $jsonPath, s
     $imageFilename = basename($jsonPath, '.json');
     $meta = load_meta($imageFilename, $imagesDir);
     
-    // Check status flag
-    $status = $meta['variant_regeneration_status'] ?? null;
+    // Check status flag inside ai_painting_variants
+    $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+    $status = $aiPaintingVariants['regeneration_status'] ?? null;
     if ($status === 'needed') {
         return true;
     }
@@ -463,8 +464,9 @@ function poll_ai_painting_variants(string $baseName, string $jsonPath): array {
     $status = $aiPaintingVariants['status'] ?? null;
     $variants = $aiPaintingVariants['variants'] ?? [];
     
-    // Check if status is in_progress and has variants to poll
-    if ($status === 'in_progress' && !empty($variants)) {
+    // Check if there are variants that need polling (in_progress with prediction_url)
+    // Don't require global status to be in_progress - poll individual variants regardless
+    if (!empty($variants)) {
         $allCompleted = true;
         $anyInProgress = false;
         
@@ -589,21 +591,9 @@ function poll_ai_painting_variants(string $baseName, string $jsonPath): array {
         }
     }
     
-    // Check if status is wanted or not set - start new generation
-    if ($status !== 'in_progress' && $status !== 'completed') {
-        require_once __DIR__ . '/ai_painting_variants.php';
-        $result = process_ai_painting_variants($baseName);
-        
-        if ($result['ok']) {
-            if ($result['started'] > 0) {
-                return ['ok' => true, 'started' => true, 'message' => 'Started variant generation'];
-            } else {
-                return ['ok' => true, 'skipped' => true, 'message' => 'No variants to generate'];
-            }
-        } else {
-            return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
-        }
-    }
+    // Don't automatically generate variants - only process existing ones
+    // Variants should only be generated when explicitly requested via add_variant_to_queue.php
+    // or when manually triggered through the UI
     
     return ['ok' => true, 'skipped' => true, 'message' => 'No action needed'];
 }
@@ -687,8 +677,10 @@ function process_variant_generation(string $baseName, string $jsonPath, string $
         }
     }
     
-    $activeVariants = isset($meta['active_variants']) && is_array($meta['active_variants']) 
-        ? $meta['active_variants'] 
+    // Get active_variants from ai_painting_variants object
+    $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+    $activeVariants = isset($aiPaintingVariants['active_variants']) && is_array($aiPaintingVariants['active_variants']) 
+        ? $aiPaintingVariants['active_variants'] 
         : [];
     
     if (empty($activeVariants)) {
@@ -852,8 +844,10 @@ function cleanup_orphaned_variants(string $baseName, string $jsonPath, string $i
         }
     }
     
-    $activeVariants = isset($meta['active_variants']) && is_array($meta['active_variants']) 
-        ? $meta['active_variants'] 
+    // Get active_variants from ai_painting_variants object
+    $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+    $activeVariants = isset($aiPaintingVariants['active_variants']) && is_array($aiPaintingVariants['active_variants']) 
+        ? $aiPaintingVariants['active_variants'] 
         : [];
     
     // Find all variant files for this base
@@ -1193,13 +1187,25 @@ foreach ($jsonFiles as $item) {
     
     $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
     $status = $aiPaintingVariants['status'] ?? null;
+    $variants = $aiPaintingVariants['variants'] ?? [];
     
-    // Skip if not in_progress or wanted
-    if ($status !== 'in_progress' && $status !== 'wanted' && $status !== null) {
+    // Check if there are any variants that need polling (in_progress with prediction_url)
+    $hasInProgressVariants = false;
+    foreach ($variants as $variantInfo) {
+        $variantStatus = $variantInfo['status'] ?? null;
+        $predictionUrl = $variantInfo['prediction_url'] ?? null;
+        if ($variantStatus === 'in_progress' && $predictionUrl) {
+            $hasInProgressVariants = true;
+            break;
+        }
+    }
+    
+    // Skip if not in_progress/wanted/null AND no variants need polling
+    if (($status !== 'in_progress' && $status !== 'wanted' && $status !== null) && !$hasInProgressVariants) {
         continue;
     }
     
-    error_log('[Background Tasks] ' . $baseName . ': Processing AI painting variants (status: ' . ($status ?? 'null') . ')');
+    error_log('[Background Tasks] ' . $baseName . ': Processing AI painting variants (status: ' . ($status ?? 'null') . ', has_in_progress: ' . ($hasInProgressVariants ? 'yes' : 'no') . ')');
     $result = poll_ai_painting_variants($baseName, $jsonPath);
     
     if ($result['ok']) {
@@ -1289,15 +1295,25 @@ foreach ($jsonFiles as $item) {
     }
     
     // Check variant generation (create variants that are in active_variants but don't exist)
-    $activeVariants = $meta['active_variants'] ?? [];
+    $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+    $activeVariants = $aiPaintingVariants['active_variants'] ?? [];
+    $trackedVariants = $aiPaintingVariants['variants'] ?? [];
     if (!empty($activeVariants) && is_array($activeVariants)) {
         // Check if any variant files are missing
+        // But skip variants that are already being tracked in variants object (they're being processed async)
         $missingVariants = [];
         foreach ($activeVariants as $variantName) {
             $variantFile = $baseName . '_variant_' . $variantName . '.jpg';
             $variantPath = $imagesDir . '/' . $variantFile;
             if (!is_file($variantPath)) {
-                $missingVariants[] = $variantName;
+                // Check if this variant is already being tracked in variants object
+                $variantTracked = isset($trackedVariants[$variantName]);
+                $variantStatus = $variantTracked ? ($trackedVariants[$variantName]['status'] ?? null) : null;
+                
+                // Only add to missing if not tracked or if tracked but not in progress (failed/wanted)
+                if (!$variantTracked || ($variantStatus !== 'in_progress' && $variantStatus !== 'completed')) {
+                    $missingVariants[] = $variantName;
+                }
             }
         }
         

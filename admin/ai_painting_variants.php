@@ -125,38 +125,71 @@ PROMPT;
     $errors = [];
     $variants = $aiPaintingVariants['variants'] ?? [];
     
+    // Initialize active_variants if not exists
+    if (!isset($aiPaintingVariants['active_variants']) || !is_array($aiPaintingVariants['active_variants'])) {
+        $aiPaintingVariants['active_variants'] = [];
+    }
+    
     // Process each variant template
     foreach ($variantTemplates as $variantTemplate) {
         $variantName = $variantTemplate['variant_name'];
         $targetPath = $imagesDir . '/' . $imageBaseName . '_variant_' . $variantName . '.jpg';
         
-        // Check if this variant is already in progress or completed
-        $variantJsonPath = $variantsDir . '/' . $variantName . '.json';
-        $variantMeta = [];
-        if (is_file($variantJsonPath)) {
-            $variantContent = @file_get_contents($variantJsonPath);
-            if ($variantContent !== false) {
-                $decoded = json_decode($variantContent, true);
-                if (is_array($decoded)) {
-                    $variantMeta = $decoded;
-                }
-            }
-        }
-        
-        $variantStatus = $variantMeta['status'] ?? null;
-        $variantPredictionUrl = $variantMeta['prediction_url'] ?? null;
+        // Check if this variant is already tracked in variants
+        $existingVariant = $variants[$variantName] ?? null;
+        $existingStatus = $existingVariant['status'] ?? null;
+        $existingPredictionUrl = $existingVariant['prediction_url'] ?? null;
         
         // If variant is already completed and target exists, skip
-        if ($variantStatus === 'completed' && is_file($targetPath) && !$imageGenerationNeeded) {
+        if ($existingStatus === 'completed' && is_file($targetPath) && !$imageGenerationNeeded) {
+            // Ensure it's in active_variants
+            if (!in_array($variantName, $aiPaintingVariants['active_variants'], true)) {
+                $aiPaintingVariants['active_variants'][] = $variantName;
+            }
             continue;
         }
         
         // If variant has a prediction URL and is in_progress, it will be polled by background task
-        if ($variantPredictionUrl && $variantStatus === 'in_progress') {
+        if ($existingPredictionUrl && $existingStatus === 'in_progress') {
+            // Ensure it's in active_variants
+            if (!in_array($variantName, $aiPaintingVariants['active_variants'], true)) {
+                $aiPaintingVariants['active_variants'][] = $variantName;
+            }
             continue;
         }
         
-        // Start new variant generation
+        // Add variant to active_variants immediately
+        if (!in_array($variantName, $aiPaintingVariants['active_variants'], true)) {
+            $aiPaintingVariants['active_variants'][] = $variantName;
+        }
+        
+        // Create variant entry immediately (like ai_image_by_corners.php does)
+        // This ensures the variant is tracked even if the API call fails
+        $variants[$variantName] = [
+            'variant_name' => $variantName,
+            'status' => 'in_progress',
+            'started_at' => date('c'),
+            'prediction_url' => null, // Will be updated after API call
+            'prediction_id' => null,
+            'prediction_status' => 'unknown',
+            'target_path' => $targetPath,
+            'variant_template_path' => $variantTemplate['variant_path'],
+            'final_image_path' => $finalImage,
+            'prompt' => $prompt,
+            'prompt_final' => null, // Will be updated after API call
+            'width' => $width,
+            'height' => $height
+        ];
+        
+        // Save immediately (non-blocking, like ai_image_by_corners.php)
+        $aiPaintingVariants['variants'] = $variants;
+        $aiPaintingVariants['status'] = 'in_progress';
+        if (!isset($aiPaintingVariants['started_at'])) {
+            $aiPaintingVariants['started_at'] = date('c');
+        }
+        update_json_file($jsonPath, ['ai_painting_variants' => $aiPaintingVariants], false);
+        
+        // Now start the async generation (non-blocking)
         $result = generate_variant_async(
             $variantName,
             $variantTemplate['variant_path'],
@@ -169,37 +202,28 @@ PROMPT;
         
         if ($result['ok'] && isset($result['prediction_started'])) {
             $started++;
-            // Track this variant in the painting's metadata with all prediction details
-            $variants[$variantName] = [
-                'variant_name' => $variantName,
-                'status' => 'in_progress',
-                'started_at' => date('c'),
-                'prediction_url' => $result['prediction_url'] ?? null,
-                'prediction_id' => $result['prediction_id'] ?? null,
-                'prediction_status' => $result['prediction_status'] ?? 'unknown',
-                'target_path' => $targetPath,
-                'variant_template_path' => $variantTemplate['variant_path'],
-                'final_image_path' => $finalImage,
-                'prompt' => $prompt,
-                'prompt_final' => $result['prompt_final'] ?? null,
-                'width' => $width,
-                'height' => $height
-            ];
+            // Update variant with prediction details
+            $variants[$variantName]['prediction_url'] = $result['prediction_url'] ?? null;
+            $variants[$variantName]['prediction_id'] = $result['prediction_id'] ?? null;
+            $variants[$variantName]['prediction_status'] = $result['prediction_status'] ?? 'unknown';
+            $variants[$variantName]['prompt_final'] = $result['prompt_final'] ?? null;
+            
+            // Update metadata again with prediction URL
+            $aiPaintingVariants['variants'] = $variants;
+            update_json_file($jsonPath, ['ai_painting_variants' => $aiPaintingVariants], false);
         } else {
+            // API call failed - mark variant as wanted for retry
+            $variants[$variantName]['status'] = 'wanted';
+            $variants[$variantName]['error'] = $result['error'] ?? 'Unknown error';
+            $aiPaintingVariants['variants'] = $variants;
+            update_json_file($jsonPath, ['ai_painting_variants' => $aiPaintingVariants], false);
+            
             $errors[] = [
                 'variant' => $variantName,
                 'error' => $result['error'] ?? 'Unknown error'
             ];
         }
     }
-    
-    // Update painting metadata with variant tracking
-    $aiPaintingVariants['variants'] = $variants;
-    $aiPaintingVariants['status'] = 'in_progress';
-    if (!isset($aiPaintingVariants['started_at'])) {
-        $aiPaintingVariants['started_at'] = date('c');
-    }
-    update_json_file($jsonPath, ['ai_painting_variants' => $aiPaintingVariants], false);
     
     return [
         'ok' => true,

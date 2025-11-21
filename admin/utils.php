@@ -864,8 +864,9 @@ function update_json_file(string $jsonPath, array $updates, bool $mergeNested = 
  */
 function is_task_in_progress(array $meta, string $taskType, int $maxMinutes = 10): bool {
     if ($taskType === 'variant_regeneration') {
-        $status = $meta['variant_regeneration_status'] ?? null;
-        $startedAt = $meta['variant_regeneration_started_at'] ?? null;
+        $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+        $status = $aiPaintingVariants['regeneration_status'] ?? null;
+        $startedAt = $aiPaintingVariants['regeneration_started_at'] ?? null;
         
         if ($status !== 'in_progress') {
             return false;
@@ -1090,14 +1091,27 @@ function update_task_status(string $jsonPath, string $taskType, string $status, 
     $updates = [];
     
     if ($taskType === 'variant_regeneration') {
-        $updates['variant_regeneration_status'] = $status;
-        if ($status === 'in_progress') {
-            $updates['variant_regeneration_started_at'] = $startedAt ?? date('c');
-        } elseif ($status === 'completed') {
-            $updates['variant_regeneration_last_completed'] = date('c');
-            // Clear started_at when completed
-            $updates['variant_regeneration_started_at'] = null;
+        // Load existing ai_painting_variants to preserve other fields
+        $existingMeta = [];
+        if (is_file($jsonPath)) {
+            $content = @file_get_contents($jsonPath);
+            if ($content !== false) {
+                $decoded = json_decode($content, true);
+                if (is_array($decoded)) {
+                    $existingMeta = $decoded;
+                }
+            }
         }
+        $aiPaintingVariants = $existingMeta['ai_painting_variants'] ?? [];
+        $aiPaintingVariants['regeneration_status'] = $status;
+        if ($status === 'in_progress') {
+            $aiPaintingVariants['regeneration_started_at'] = $startedAt ?? date('c');
+        } elseif ($status === 'completed') {
+            $aiPaintingVariants['regeneration_last_completed'] = date('c');
+            // Clear started_at when completed
+            $aiPaintingVariants['regeneration_started_at'] = null;
+        }
+        $updates['ai_painting_variants'] = $aiPaintingVariants;
     } elseif ($taskType === 'ai_corners') {
         // Load existing ai_corners object to preserve other fields
         $existingMeta = [];

@@ -1642,25 +1642,6 @@
         </div>
       </div>
       
-      <!-- Background Tasks Section -->
-      <div style="margin-bottom: 24px; padding: 16px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
-        <h3 style="font-size: 14px; margin-bottom: 12px; color: #555;">
-          ⚙️ Background Tasks
-        </h3>
-        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-          <button type="button" id="triggerBackgroundTasks" onclick="triggerBackgroundTasks()" 
-                  style="padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;">
-            Background Tasks verarbeiten
-          </button>
-          <div id="backgroundTasksStatus" style="font-size: 12px; color: #666;">
-            <span id="pendingTasksCount">-</span>
-          </div>
-        </div>
-        <div id="backgroundTasksProgress" style="display: none; margin-top: 12px; font-size: 11px; color: #888;">
-          <div id="backgroundTasksMessage"></div>
-        </div>
-      </div>
-      
       <!-- AI Upload Section -->
       <div>
         <h3 style="font-size: 14px; margin-bottom: 12px; color: #555;">
@@ -2258,103 +2239,6 @@
     } else {
       updateSiteDomainLink();
     }
-    // Background Tasks Functions
-    function triggerBackgroundTasks() {
-      const btn = document.getElementById('triggerBackgroundTasks');
-      const progressDiv = document.getElementById('backgroundTasksProgress');
-      const messageDiv = document.getElementById('backgroundTasksMessage');
-      
-      btn.disabled = true;
-      btn.textContent = 'Starte Verarbeitung...';
-      progressDiv.style.display = 'block';
-      messageDiv.textContent = 'Lade Warteschlange...';
-      
-      // First get preview count
-      fetch('/admin/process_background_tasks.php?preview=1')
-        .then(r => r.json())
-        .then(previewData => {
-          if (!previewData.ok || !previewData.summary) {
-            messageDiv.textContent = 'Fehler beim Laden der Warteschlange';
-            btn.disabled = false;
-            btn.textContent = 'Background Tasks verarbeiten';
-            return;
-          }
-          
-          const variants = previewData.summary.variants || 0;
-          const ai = previewData.summary.ai || 0;
-          const gallery = previewData.summary.gallery || 0;
-          const total = variants + ai + gallery;
-          
-          // Update the count display
-          const countEl = document.getElementById('pendingTasksCount');
-          if (countEl) {
-            if (total > 0) {
-              countEl.textContent = `${total} ausstehende Aufgabe(n)`;
-              countEl.style.color = '#dc3545';
-            } else {
-              countEl.textContent = 'Keine ausstehenden Aufgaben';
-              countEl.style.color = '#28a745';
-            }
-          }
-          
-          if (total === 0) {
-            messageDiv.innerHTML = '<strong>Keine ausstehenden Aufgaben</strong>';
-            btn.disabled = false;
-            btn.textContent = 'Background Tasks verarbeiten';
-            return;
-          }
-          
-          // Show count and start processing
-          messageDiv.innerHTML = `
-            <strong>Verarbeitung gestartet:</strong><br>
-            ${total} Aufgabe(n) werden verarbeitet<br>
-            <small style="color: #666; margin-top: 8px; display: block;">Die Verarbeitung läuft im Hintergrund.</small>
-          `;
-          
-          // Trigger async processing (fire-and-forget)
-          const formData = new FormData();
-          formData.append('async', '1');
-          
-          // Fire and forget - don't wait for response
-          fetch('/admin/process_background_tasks.php', { 
-            method: 'POST',
-            body: formData,
-            keepalive: true
-          }).catch(() => {
-            // Silently ignore - processing continues in background
-          });
-          
-          btn.disabled = false;
-          btn.textContent = 'Background Tasks verarbeiten';
-        })
-        .catch(err => {
-          btn.disabled = false;
-          btn.textContent = 'Background Tasks verarbeiten';
-          messageDiv.textContent = 'Fehler: ' + err.message;
-        });
-    }
-    
-    function updatePendingTasksCount() {
-      fetch('/admin/process_background_tasks.php?preview=1')
-        .then(r => r.json())
-        .then(data => {
-          if (data.ok && data.summary) {
-            const total = (data.summary.variants || 0) + (data.summary.ai || 0) + (data.summary.gallery || 0);
-            const countEl = document.getElementById('pendingTasksCount');
-            if (total > 0) {
-              countEl.textContent = `${total} ausstehende Aufgabe(n)`;
-              countEl.style.color = '#dc3545';
-            } else {
-              countEl.textContent = 'Keine ausstehenden Aufgaben';
-              countEl.style.color = '#28a745';
-            }
-          }
-        })
-        .catch(() => {
-          document.getElementById('pendingTasksCount').textContent = 'Status unbekannt';
-        });
-    }
-    
     async function updateAIStatus(imageOriginalName, statusKey, statusValue, imageBaseName) {
       const body = new FormData();
       body.set('image', imageOriginalName);
@@ -2421,8 +2305,6 @@
         showToast('Fehler beim Laden des JSON', 'error');
       }
     }
-    
-    // Note: updatePendingTasksCount() is only called manually by user actions, not automatically
     
     // Background Tasks Utility
     async function processBackgroundTasks() {
@@ -2499,15 +2381,29 @@
         try {
           const result = await processBackgroundTasks();
           showToast(`Background tasks processed: ${result.processed?.length || 0} processed, ${result.errors?.length || 0} errors`, result.ok ? 'success' : 'error');
-          if (typeof updatePendingTasksCount === 'function') {
-            updatePendingTasksCount();
-          }
         } catch (error) {
           showToast('Fehler beim Verarbeiten der Background Tasks', 'error');
         } finally {
           btn.disabled = false;
           btn.textContent = 'B';
         }
+      });
+    })();
+
+    // Auto-run background tasks 1 second after page load (only once)
+    (function() {
+      let autoRunExecuted = false;
+      window.addEventListener('DOMContentLoaded', () => {
+        if (autoRunExecuted) return;
+        autoRunExecuted = true;
+        setTimeout(async () => {
+          try {
+            await processBackgroundTasks();
+          } catch (error) {
+            // Silently fail - don't show error toast for auto-run
+            console.log('Auto background task check:', error);
+          }
+        }, 1000);
       });
     })();
   </script>

@@ -85,8 +85,7 @@ try {
         $thumbPath = generate_thumbnail_path($finalPath);
         generate_thumbnail($finalPath, $thumbPath, 512, 1024);
         
-        // Set variant regeneration flag (will be processed by background task processor)
-        update_json_file($metaPath, ['variant_regeneration_status' => 'needed'], false);
+        // Variants are not automatically regenerated - they must be explicitly requested
         
         echo json_encode(['ok' => true]);
         exit;

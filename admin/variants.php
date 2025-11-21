@@ -618,12 +618,10 @@ function handleRegenerate() {
 }
 
 function handleCopyToImage() {
-  global $variantsDir, $TOKEN;
+  global $variantsDir;
   
   $variantFilename = trim($_POST['variant_filename'] ?? '');
   $imageBaseName = trim($_POST['image_base_name'] ?? '');
-  $width = trim($_POST['width'] ?? '');
-  $height = trim($_POST['height'] ?? '');
   
   if ($variantFilename === '' || $imageBaseName === '') {
     http_response_code(400);
@@ -645,174 +643,33 @@ function handleCopyToImage() {
     exit;
   }
   
-  // Find the _final image for this base
-  $imagesDir = dirname(__DIR__) . '/admin/images';
-  $finalImage = null;
-  $files = scandir($imagesDir) ?: [];
-  foreach ($files as $file) {
-    if ($file === '.' || $file === '..') continue;
-    $fileStem = pathinfo($file, PATHINFO_FILENAME);
-    if (strpos($fileStem, $imageBaseName.'_final') === 0) {
-      $finalImage = $imagesDir . '/' . $file;
-      break;
-    }
-  }
-  
-  if (!$finalImage || !is_file($finalImage)) {
-    http_response_code(404);
-    echo json_encode(['ok' => false, 'error'=>'final image not found for base: '.$imageBaseName]);
-    exit;
-  }
-  
   // Get variant name without extension
   $variantName = pathinfo($variantFilename, PATHINFO_FILENAME);
   
-  // Create target filename: {imageBaseName}_variant_{variantName}.jpg (always JPG)
+  // Use ai_painting_variants.php to generate the variant asynchronously
+  // This follows the rule: "Niemals Replicate synchron in HTTP-Request-Handlern aufrufen"
+  require_once __DIR__ . '/ai_painting_variants.php';
+  $result = process_ai_painting_variants($imageBaseName, [$variantName]);
+  
+  if (!$result['ok']) {
+    http_response_code(502);
+    echo json_encode([
+      'ok' => false,
+      'error' => $result['error'] ?? 'generation_failed',
+      'detail' => $result['message'] ?? 'Unknown error'
+    ]);
+    exit;
+  }
+  
+  // Return immediately - generation is async and will be processed by background task
   $targetFilename = $imageBaseName . '_variant_' . $variantName . '.jpg';
-  $targetPath = $imagesDir . '/' . $targetFilename;
-  
-  // Ensure images directory exists
-  if (!is_dir($imagesDir)) {
-    http_response_code(500);
-    echo json_encode(['ok' => false, 'error'=>'images directory not found']);
-    exit;
-  }
-  
-  // Use AI to place the painting into the variant
-  // Load both images as base64
-  $variantMime = mime_content_type($variantPath);
-  $finalMime = mime_content_type($finalImage);
-  
-  if (!in_array($variantMime, ['image/jpeg','image/png','image/webp']) || 
-      !in_array($finalMime, ['image/jpeg','image/png','image/webp'])) {
-    http_response_code(400);
-    echo json_encode(['ok' => false, 'error'=>'unsupported image type']);
-    exit;
-  }
-  
-  $variantB64 = base64_encode(file_get_contents($variantPath));
-  $finalB64 = base64_encode(file_get_contents($finalImage));
-  
-  // Use nano banana to place the painting into the variant
-  $VERSION = '2784c5d54c07d79b0a2a5385477038719ad37cb0745e61bbddf2fc236d196a6b';
-  
-  // Build prompt with dimensions if available
-  $dimensionsInfo = '';
-  if ($width !== '' && $height !== '') {
-    $dimensionsInfo = "\n\nPainting dimensions: {$width}cm (width) × {$height}cm (height).";
-    $dimensionsInfo .= "\nRoom height: 250cm (ceiling height).";
-    $dimensionsInfo .= "\nPlace the painting at an appropriate scale relative to the room dimensions. The painting should be positioned realistically on the wall, considering its actual size.";
-  }
-  
-  $prompt = <<<PROMPT
-You are an image editor.
-
-Task:
-- Place the painting into the free space on the wall.
-- Ensure the painting is properly scaled and positioned realistically.
-- The painting should be centered or positioned appropriately on the wall.
-- Maintain natural lighting and shadows.
-{$dimensionsInfo}
-PROMPT;
-  
-  $payload = [
-    'version' => $VERSION,
-    'input' => [
-      'prompt' => $prompt,
-      'image_input' => [
-        "data:$variantMime;base64,$variantB64",
-        "data:$finalMime;base64,$finalB64"
-      ],
-      'aspect_ratio' => '1:1',
-      'output_format' => 'jpg'
-    ]
-  ];
-  
-  // Call Replicate API
-  try {
-    $resp = replicate_call_version($TOKEN, $VERSION, $payload);
-  } catch (RuntimeException $e) {
-    http_response_code(502);
-    echo json_encode(['ok' => false, 'error' => 'replicate_failed', 'detail' => $e->getMessage()]);
-    exit;
-  }
-  
-  // Extract image from result
-  $imgBytes = fetch_image_bytes($resp['output'] ?? null);
-  if ($imgBytes === null) {
-    if (is_array($resp['output']) && isset($resp['output']['images'][0])) {
-      $imgBytes = fetch_image_bytes($resp['output']['images'][0]);
-    }
-  }
-  
-  if ($imgBytes === null) {
-    http_response_code(502);
-    echo json_encode(['ok' => false, 'error'=>'unexpected_output_format','sample'=>is_scalar($resp['output'])?$resp['output']:json_encode($resp['output'])]);
-    exit;
-  }
-  
-  file_put_contents($targetPath, $imgBytes);
-  
-  // Generate thumbnail for the variant (full resolution in admin/images, just generate thumbnail)
-  $thumbPath = generate_thumbnail_path($targetPath);
-  generate_thumbnail($targetPath, $thumbPath, 512, 1024);
-
-  // Update JSON metadata to track this variant as active
-  $jsonFile = find_json_file($imageBaseName, $imagesDir);
-  if ($jsonFile) {
-    $metaPath = $imagesDir . '/' . $jsonFile;
-    // Load existing metadata
-    $meta = [];
-    if (is_file($metaPath)) {
-      $metaContent = @file_get_contents($metaPath);
-      if ($metaContent !== false) {
-        $decoded = json_decode($metaContent, true);
-        if (is_array($decoded)) {
-          $meta = $decoded;
-        }
-      }
-    }
-    
-    // Add variant to active variants list
-    if (!isset($meta['active_variants']) || !is_array($meta['active_variants'])) {
-      $meta['active_variants'] = [];
-    }
-    if (!in_array($variantName, $meta['active_variants'], true)) {
-      $meta['active_variants'][] = $variantName;
-    }
-    
-    // Update JSON thread-safely
-    update_json_file($metaPath, ['active_variants' => $meta['active_variants']], false);
-  }
-
-  // Check if this image is already in gallery and update it
-  $galleryDir = dirname(__DIR__) . '/img/gallery/';
-  $galleryFilename = find_gallery_entry($imageBaseName, $galleryDir);
-  $inGallery = $galleryFilename !== null;
-  
-  // If in gallery, update the gallery entry to include the new variant
-  if ($inGallery) {
-    // Load metadata from images directory
-    $jsonFile = find_json_file($imageBaseName, $imagesDir);
-    if ($jsonFile) {
-      $metaFile = $imagesDir . '/' . $jsonFile;
-      $metaContent = file_get_contents($metaFile);
-      $meta = json_decode($metaContent, true);
-      if (is_array($meta)) {
-        update_gallery_entry($imageBaseName, $meta, $imagesDir, $galleryDir);
-        
-        // Trigger async image optimization with force to ensure thumbnails are regenerated
-        // Variant regeneration triggers removed - handled by background task processor
-      }
-    }
-  }
   
   echo json_encode([
     'ok' => true,
     'variant_filename' => $variantFilename,
     'target_filename' => $targetFilename,
-    'url' => 'images/' . rawurlencode($targetFilename),
-    'gallery_updated' => $inGallery
+    'prediction_started' => true,
+    'message' => 'Variant generation started, will be processed by background task'
   ]);
 }
 
@@ -995,16 +852,17 @@ PROMPT;
           }
         }
         
-        // Add variant to active variants list
-        if (!isset($meta['active_variants']) || !is_array($meta['active_variants'])) {
-          $meta['active_variants'] = [];
+        // Add variant to active variants list inside ai_painting_variants
+        $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+        if (!isset($aiPaintingVariants['active_variants']) || !is_array($aiPaintingVariants['active_variants'])) {
+          $aiPaintingVariants['active_variants'] = [];
         }
-        if (!in_array($variant['variant_name'], $meta['active_variants'], true)) {
-          $meta['active_variants'][] = $variant['variant_name'];
+        if (!in_array($variant['variant_name'], $aiPaintingVariants['active_variants'], true)) {
+          $aiPaintingVariants['active_variants'][] = $variant['variant_name'];
         }
         
         // Update JSON thread-safely
-        update_json_file($metaPath, ['active_variants' => $meta['active_variants']], false);
+        update_json_file($metaPath, ['ai_painting_variants' => $aiPaintingVariants], false);
       }
       
       $regenerated++;

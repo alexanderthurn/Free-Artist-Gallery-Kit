@@ -172,9 +172,7 @@ if ($inGallery) {
     update_gallery_entry($originalFilename, $meta, $imagesDir, $galleryDir);
 }
 
-// Set variant regeneration flag (will be processed by background task processor)
-$metaPath = get_meta_path($originalImageFile, $imagesDir);
-update_json_file($metaPath, ['variant_regeneration_status' => 'needed'], false);
+// Variants are not automatically regenerated - they must be explicitly requested
 
 echo json_encode(['ok' => true, 'in_gallery' => $inGallery]);
 exit;

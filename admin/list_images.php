@@ -117,8 +117,10 @@ foreach ($groups as $key => &$g) {
     if ($metaFile && is_file($metaFile)) {
         $imageFilename = basename($metaFile, '.json');
         $decoded = load_meta($imageFilename, $dir);
-        if (is_array($decoded) && isset($decoded['active_variants']) && is_array($decoded['active_variants'])) {
-            foreach ($decoded['active_variants'] as $variantName) {
+        // Get active_variants from ai_painting_variants object
+        $aiPaintingVariants = $decoded['ai_painting_variants'] ?? [];
+        if (is_array($aiPaintingVariants) && isset($aiPaintingVariants['active_variants']) && is_array($aiPaintingVariants['active_variants'])) {
+            foreach ($aiPaintingVariants['active_variants'] as $variantName) {
                 // Check if variant file already exists
                 $variantFile = $key . '_variant_' . $variantName . '.jpg';
                 $variantPath = $dir . '/' . $variantFile;

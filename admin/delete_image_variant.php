@@ -17,13 +17,19 @@ $imagesDir = __DIR__ . '/images';
 $filepath = $imagesDir . '/' . basename($filename);
 
 // Extract base name and variant name before checking/deleting
-$base = extract_base_name($filename);
+// For variant files: IMG_2152_2_variant_wohnzimmer.jpg -> base: IMG_2152_2, variant: wohnzimmer
 $variantName = null;
-// Remove _variant_ part if present and extract variant name
-$variantPos = strpos($base, '_variant_');
+$base = null;
+$filenameStem = pathinfo($filename, PATHINFO_FILENAME);
+$variantPos = strpos($filenameStem, '_variant_');
 if ($variantPos !== false) {
-    $variantName = substr($base, $variantPos + 9); // +9 for '_variant_'
-    $base = substr($base, 0, $variantPos);
+    // Extract variant name (everything after '_variant_')
+    $variantName = substr($filenameStem, $variantPos + 9); // +9 for '_variant_'
+    // Extract base name (everything before '_variant_')
+    $base = substr($filenameStem, 0, $variantPos);
+} else {
+    // Not a variant file, use extract_base_name as fallback
+    $base = extract_base_name($filename);
 }
 
 // Only allow deleting variant files (those with _variant_ in the name)
@@ -98,18 +104,66 @@ if ($variantName !== null && $base !== '') {
             }
         }
         
-        // Remove variant from active variants list
-        if (isset($meta['active_variants']) && is_array($meta['active_variants'])) {
-            $originalCount = count($meta['active_variants']);
-            $meta['active_variants'] = array_values(array_filter($meta['active_variants'], function($v) use ($variantName) {
+        // Remove variant from active variants list inside ai_painting_variants
+        $aiPaintingVariants = $meta['ai_painting_variants'] ?? [];
+        $updated = false;
+        
+        if (isset($aiPaintingVariants['active_variants']) && is_array($aiPaintingVariants['active_variants'])) {
+            $originalCount = count($aiPaintingVariants['active_variants']);
+            $aiPaintingVariants['active_variants'] = array_values(array_filter($aiPaintingVariants['active_variants'], function($v) use ($variantName) {
                 return $v !== $variantName;
             }));
             
-            // Only update if something changed
-            if (count($meta['active_variants']) !== $originalCount) {
-                // Update JSON thread-safely
-                update_json_file($metaPath, ['active_variants' => $meta['active_variants']], false);
+            if (count($aiPaintingVariants['active_variants']) !== $originalCount) {
+                $updated = true;
             }
+        }
+        
+        // Also remove from variants tracking if it exists
+        if (isset($aiPaintingVariants['variants'][$variantName])) {
+            unset($aiPaintingVariants['variants'][$variantName]);
+            $updated = true;
+        }
+        
+        // Update global status based on remaining variants
+        if ($updated) {
+            $remainingVariants = $aiPaintingVariants['variants'] ?? [];
+            $remainingActiveVariants = $aiPaintingVariants['active_variants'] ?? [];
+            
+            if (empty($remainingVariants) && empty($remainingActiveVariants)) {
+                // No variants left - clear status or set to completed
+                unset($aiPaintingVariants['status']);
+                unset($aiPaintingVariants['started_at']);
+                unset($aiPaintingVariants['completed_at']);
+            } else {
+                // Check if all remaining variants are completed
+                $allCompleted = true;
+                $anyInProgress = false;
+                
+                foreach ($remainingVariants as $vName => $vData) {
+                    $vStatus = $vData['status'] ?? null;
+                    if ($vStatus === 'in_progress') {
+                        $anyInProgress = true;
+                        $allCompleted = false;
+                        break;
+                    } elseif ($vStatus !== 'completed') {
+                        $allCompleted = false;
+                    }
+                }
+                
+                if ($allCompleted && !$anyInProgress) {
+                    $aiPaintingVariants['status'] = 'completed';
+                    $aiPaintingVariants['completed_at'] = date('c');
+                } elseif ($anyInProgress) {
+                    $aiPaintingVariants['status'] = 'in_progress';
+                } else {
+                    // Some variants might be in other states (wanted, failed, etc.)
+                    $aiPaintingVariants['status'] = 'in_progress';
+                }
+            }
+            
+            // Update JSON thread-safely
+            update_json_file($metaPath, ['ai_painting_variants' => $aiPaintingVariants], false);
         }
     }
 }

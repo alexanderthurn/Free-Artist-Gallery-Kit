@@ -88,15 +88,23 @@ function save_meta(string $imageFilename, array $updates, ?string $imagesDir = n
     }
     
     // Handle special cases for AI status fields (clear timestamps when status is cleared)
+    // Note: Status is now stored in ai_corners.status and ai_fill_form.status
+    // This code handles legacy top-level status fields for backward compatibility
     if (isset($updates['ai_corners_status']) && $updates['ai_corners_status'] === '') {
         $updates['ai_corners_status'] = null;
-        $updates['ai_corners_started_at'] = null;
-        $updates['ai_corners_completed_at'] = null;
+        // Also clear nested status if it exists
+        if (isset($updates['ai_corners']) && is_array($updates['ai_corners'])) {
+            $updates['ai_corners']['started_at'] = null;
+            $updates['ai_corners']['completed_at'] = null;
+        }
     }
     if (isset($updates['ai_form_status']) && $updates['ai_form_status'] === '') {
         $updates['ai_form_status'] = null;
-        $updates['ai_form_started_at'] = null;
-        $updates['ai_form_completed_at'] = null;
+        // Also clear nested status if it exists
+        if (isset($updates['ai_fill_form']) && is_array($updates['ai_fill_form'])) {
+            $updates['ai_fill_form']['started_at'] = null;
+            $updates['ai_fill_form']['completed_at'] = null;
+        }
     }
     
     // Use thread-safe JSON update function
@@ -183,11 +191,27 @@ if (basename($_SERVER['SCRIPT_FILENAME']) === basename(__FILE__)) {
         }
         if (isset($_POST['ai_corners_status'])) {
             $status = trim((string)$_POST['ai_corners_status']);
-            $updates['ai_corners_status'] = $status === '' ? null : $status;
+            // Update nested ai_corners.status
+            $existingMeta = load_meta($image, $imagesDir);
+            $aiCorners = $existingMeta['ai_corners'] ?? [];
+            $aiCorners['status'] = $status === '' ? null : $status;
+            if ($status === '') {
+                $aiCorners['started_at'] = null;
+                $aiCorners['completed_at'] = null;
+            }
+            $updates['ai_corners'] = $aiCorners;
         }
         if (isset($_POST['ai_form_status'])) {
             $status = trim((string)$_POST['ai_form_status']);
-            $updates['ai_form_status'] = $status === '' ? null : $status;
+            // Update nested ai_fill_form.status
+            $existingMeta = load_meta($image, $imagesDir);
+            $aiFillForm = $existingMeta['ai_fill_form'] ?? [];
+            $aiFillForm['status'] = $status === '' ? null : $status;
+            if ($status === '') {
+                $aiFillForm['started_at'] = null;
+                $aiFillForm['completed_at'] = null;
+            }
+            $updates['ai_fill_form'] = $aiFillForm;
         }
         
         // Save metadata

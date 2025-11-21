@@ -249,8 +249,8 @@ for ($i = 0; $i < $count; $i++) {
     
     // For AI uploads, set AI generation status to 'wanted' (both corners and form)
     if ($isAIUpload) {
-        $metaData['ai_corners_status'] = 'wanted';
-        $metaData['ai_form_status'] = 'wanted';
+        $metaData['ai_corners'] = ['status' => 'wanted'];
+        $metaData['ai_fill_form'] = ['status' => 'wanted'];
     }
     
     // Save metadata using meta.php function

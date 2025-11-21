@@ -53,6 +53,16 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
     
     $cornersData = calculate_corners($imagePath, $offsetPercent);
     
+    // Handle async return format - if prediction was started, return early
+    if (isset($cornersData['prediction_started']) && $cornersData['prediction_started']) {
+        return [
+            'ok' => true,
+            'prediction_started' => true,
+            'url' => $cornersData['url'] ?? null,
+            'message' => 'Corner detection prediction started, will be processed by background task'
+        ];
+    }
+    
     if (!is_array($cornersData) || !$cornersData['ok'] || !isset($cornersData['corners'])) {
         // Reset status to wanted for retry
         update_task_status($metaPath, 'ai_corners', 'wanted');
@@ -196,10 +206,23 @@ function process_ai_image_by_corners(string $imagePath, float $offsetPercent = 1
     // Step 6: Update metadata with corner positions (thread-safe)
     $metaPath = get_meta_path($originalImageFile, $imagesDir);
     
-    // Prepare updates
+    // Prepare updates - update ai_corners object
+    $existingMeta = [];
+    if (is_file($metaPath)) {
+        $existingContent = @file_get_contents($metaPath);
+        if ($existingContent !== false) {
+            $decoded = json_decode($existingContent, true);
+            if (is_array($decoded)) {
+                $existingMeta = $decoded;
+            }
+        }
+    }
+    $aiCorners = $existingMeta['ai_corners'] ?? [];
+    $aiCorners['corners_used'] = $corners;
+    
     $updates = [
         'manual_corners' => $corners,
-        'corner_detection.corners_used' => $corners
+        'ai_corners' => $aiCorners
     ];
     
     // Add image dimensions if not already present

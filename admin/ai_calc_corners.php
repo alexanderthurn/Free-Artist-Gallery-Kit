@@ -2,6 +2,391 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/utils.php';
+require_once __DIR__ . '/meta.php';
+
+/**
+ * Poll a corner detection prediction and process results if complete
+ * 
+ * @param string $jsonPath Full path to JSON metadata file
+ * @param float $offsetPercent Offset percentage (0-10, default 1.0)
+ * @return array Result array with 'ok' => true/false, 'completed' => bool, 'still_processing' => bool
+ */
+function poll_corner_prediction(string $jsonPath, float $offsetPercent = 1.0): array {
+    $meta = [];
+    if (is_file($jsonPath)) {
+        $content = @file_get_contents($jsonPath);
+        if ($content !== false) {
+            $decoded = json_decode($content, true);
+            if (is_array($decoded)) {
+                $meta = $decoded;
+            }
+        }
+    }
+    
+    $aiCorners = $meta['ai_corners'] ?? [];
+    $predictionUrl = $aiCorners['prediction_url'] ?? null;
+    if (!$predictionUrl || !is_string($predictionUrl)) {
+        return ['ok' => false, 'error' => 'prediction_url_not_found'];
+    }
+    
+    try {
+        $TOKEN = load_replicate_token();
+    } catch (RuntimeException $e) {
+        return ['ok' => false, 'error' => 'missing REPLICATE_API_TOKEN'];
+    }
+    
+    // Make single GET request to check status
+    $ch = curl_init($predictionUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_HTTPHEADER => ["Authorization: Token $TOKEN"],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30
+    ]);
+    
+    $res = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
+    
+    if ($res === false || $httpCode >= 400) {
+        // Network error - keep status as in_progress, retry next run
+        return ['ok' => true, 'still_processing' => true, 'error' => 'poll_failed', 'detail' => $err ?: 'HTTP ' . $httpCode];
+    }
+    
+    $resp = json_decode($res, true);
+    if (!is_array($resp)) {
+        return ['ok' => true, 'still_processing' => true, 'error' => 'invalid_response'];
+    }
+    
+    $status = $resp['status'] ?? 'unknown';
+    
+    // Save the response immediately - update ai_corners object
+    $aiCorners = $meta['ai_corners'] ?? [];
+    $aiCorners['replicate_response_raw'] = json_encode($resp, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $aiCorners['replicate_response'] = $resp;
+    $aiCorners['timestamp'] = date('c');
+    $aiCorners['prediction_status'] = $status; // Store prediction status separately from task status
+    update_json_file($jsonPath, ['ai_corners' => $aiCorners], false);
+    
+    if ($status === 'succeeded') {
+        // Process the completed prediction
+        return process_completed_corner_prediction($jsonPath, $resp, $offsetPercent);
+    } elseif ($status === 'failed' || $status === 'canceled') {
+        // Prediction failed - set status to wanted for retry
+        require_once __DIR__ . '/meta.php';
+        update_task_status($jsonPath, 'ai_corners', 'wanted');
+        return [
+            'ok' => false,
+            'error' => 'prediction_failed',
+            'status' => $status,
+            'detail' => $resp['error'] ?? 'Prediction failed'
+        ];
+    } else {
+        // Still processing
+        return ['ok' => true, 'still_processing' => true, 'status' => $status];
+    }
+}
+
+/**
+ * Process a completed corner prediction response
+ * 
+ * @param string $jsonPath Full path to JSON metadata file
+ * @param array $resp Replicate API response
+ * @param float $offsetPercent Offset percentage
+ * @return array Result array with corners data
+ */
+function process_completed_corner_prediction(string $jsonPath, array $resp, float $offsetPercent): array {
+    // Load image info from JSON path
+    $imageFilename = basename($jsonPath, '.json');
+    $imagesDir = dirname($jsonPath);
+    
+    // Find the original image file
+    $originalImage = null;
+    $files = scandir($imagesDir) ?: [];
+    foreach ($files as $file) {
+        if ($file === '.' || $file === '..') continue;
+        $fileStem = pathinfo($file, PATHINFO_FILENAME);
+        if (strpos($fileStem, pathinfo($imageFilename, PATHINFO_FILENAME)) === 0 && 
+            preg_match('/_original\.(jpg|jpeg|png)$/i', $file)) {
+            $originalImage = $imagesDir . '/' . $file;
+            break;
+        }
+    }
+    
+    if (!$originalImage || !is_file($originalImage)) {
+        return ['ok' => false, 'error' => 'original_image_not_found'];
+    }
+    
+    [$imgW, $imgH] = getimagesize($originalImage);
+    
+    // Extract text from response
+    $outputText = '';
+    if (isset($resp['output'])) {
+        if (is_array($resp['output'])) {
+            $outputText = implode('', $resp['output']);
+        } else {
+            $outputText = (string)$resp['output'];
+        }
+    }
+    
+    if (empty($outputText)) {
+        update_task_status($jsonPath, 'ai_corners', 'wanted');
+        return ['ok' => false, 'error' => 'empty_output', 'response' => $resp];
+    }
+    
+    // Parse corners from output (same logic as before)
+    $cornersData = null;
+    
+    // Try to extract JSON from code blocks
+    if (preg_match('/```(?:json)?\s*(\{.*)\s*```/s', $outputText, $matches)) {
+        $jsonStr = $matches[1];
+        $braceCount = 0;
+        $jsonEnd = 0;
+        $inString = false;
+        $escapeNext = false;
+        
+        for ($i = 0; $i < strlen($jsonStr); $i++) {
+            $char = $jsonStr[$i];
+            if ($escapeNext) {
+                $escapeNext = false;
+                continue;
+            }
+            if ($char === '\\') {
+                $escapeNext = true;
+                continue;
+            }
+            if ($char === '"' && !$escapeNext) {
+                $inString = !$inString;
+                continue;
+            }
+            if (!$inString) {
+                if ($char === '{') {
+                    $braceCount++;
+                } elseif ($char === '}') {
+                    $braceCount--;
+                    if ($braceCount === 0) {
+                        $jsonEnd = $i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if ($braceCount === 0 && $jsonEnd > 0) {
+            $jsonStr = substr($jsonStr, 0, $jsonEnd);
+            $jsonStr = preg_replace('/"(\w+)"\s*"\s*\\\?":/', '"$1":', $jsonStr);
+            $jsonStr = preg_replace('/:\s*"\s*"([^"]+)"/', ': "$1"', $jsonStr);
+            $jsonStr = preg_replace('/:\s*(\d+)"\s*"(\d+\.\d+)/', ': $1$2', $jsonStr);
+            $jsonStr = preg_replace('/:\s*(\d+\.\d+)"\s*"(\d+)/', ': $1$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $jsonStr);
+            $jsonStr = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $jsonStr);
+            $jsonStr = preg_replace('/"\s*"([^"]+)"/', '"$1"', $jsonStr);
+            $cornersData = json_decode($jsonStr, true);
+        }
+    }
+    
+    // Try parsing whole output as JSON
+    if ($cornersData === null || !is_array($cornersData)) {
+        $cleanedOutput = $outputText;
+        $cleanedOutput = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $cleanedOutput);
+        $cleanedOutput = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $cleanedOutput);
+        $cleanedOutput = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $cleanedOutput);
+        $cleanedOutput = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $cleanedOutput);
+        $cleanedOutput = preg_replace('/"\s+"([^"]+)"/', '"$1"', $cleanedOutput);
+        $cornersData = json_decode($cleanedOutput, true);
+    }
+    
+    // Try brace matching
+    if ($cornersData === null || !is_array($cornersData)) {
+        $jsonStart = strpos($outputText, '{');
+        if ($jsonStart !== false) {
+            $braceCount = 0;
+            $jsonEnd = $jsonStart;
+            $inString = false;
+            $escapeNext = false;
+            
+            for ($i = $jsonStart; $i < strlen($outputText); $i++) {
+                $char = $outputText[$i];
+                if ($escapeNext) {
+                    $escapeNext = false;
+                    continue;
+                }
+                if ($char === '\\') {
+                    $escapeNext = true;
+                    continue;
+                }
+                if ($char === '"' && !$escapeNext) {
+                    $inString = !$inString;
+                    continue;
+                }
+                if (!$inString) {
+                    if ($char === '{') {
+                        $braceCount++;
+                    } elseif ($char === '}') {
+                        $braceCount--;
+                        if ($braceCount === 0) {
+                            $jsonEnd = $i + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if ($braceCount === 0 && $jsonEnd > $jsonStart) {
+                $jsonStr = substr($outputText, $jsonStart, $jsonEnd - $jsonStart);
+                $jsonStr = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $jsonStr);
+                $jsonStr = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $jsonStr);
+                $jsonStr = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $jsonStr);
+                $jsonStr = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $jsonStr);
+                $jsonStr = preg_replace('/"\s+"([^"]+)"/', '"$1"', $jsonStr);
+                $cornersData = json_decode($jsonStr, true);
+            }
+        }
+    }
+    
+    // Last resort - regex extraction
+    if ($cornersData === null || !is_array($cornersData)) {
+        if (preg_match('/(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})/s', $outputText, $matches)) {
+            foreach ($matches as $match) {
+                $cleanedMatch = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $match);
+                $cleanedMatch = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $cleanedMatch);
+                $cleanedMatch = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $cleanedMatch);
+                $cleanedMatch = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $cleanedMatch);
+                $cleanedMatch = preg_replace('/"\s+"([^"]+)"/', '"$1"', $cleanedMatch);
+                $decoded = json_decode($cleanedMatch, true);
+                if (is_array($decoded) && isset($decoded['corners'])) {
+                    $cornersData = $decoded;
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (!is_array($cornersData) || !isset($cornersData['corners']) || !is_array($cornersData['corners'])) {
+        update_task_status($jsonPath, 'ai_corners', 'wanted');
+        return [
+            'ok' => false,
+            'error' => 'invalid_corners_format',
+            'output_text' => substr($outputText, 0, 1000)
+        ];
+    }
+    
+    if (count($cornersData['corners']) !== 4) {
+        update_task_status($jsonPath, 'ai_corners', 'wanted');
+        return [
+            'ok' => false,
+            'error' => 'invalid_corner_count_in_response',
+            'count' => count($cornersData['corners'])
+        ];
+    }
+    
+    // Convert percentages to pixel coordinates
+    $rawPixelCorners = [];
+    foreach ($cornersData['corners'] as $corner) {
+        $normalizedCorner = [];
+        foreach ($corner as $key => $value) {
+            $normalizedCorner[trim($key)] = $value;
+        }
+        
+        $xPercent = $normalizedCorner['x'] ?? $corner['x'] ?? null;
+        $yPercent = $normalizedCorner['y'] ?? $corner['y'] ?? null;
+        
+        if ($xPercent === null || $yPercent === null) {
+            update_task_status($jsonPath, 'ai_corners', 'wanted');
+            return ['ok' => false, 'error' => 'missing_corner_coordinates'];
+        }
+        
+        $xPixel = round(($xPercent / 100) * $imgW);
+        $yPixel = round(($yPercent / 100) * $imgH);
+        
+        $rawPixelCorners[] = [
+            'x' => $xPixel,
+            'y' => $yPixel,
+            'x_percent' => $xPercent,
+            'y_percent' => $yPercent,
+            'label' => trim(strtolower($normalizedCorner['label'] ?? $corner['label'] ?? ''))
+        ];
+    }
+    
+    // Calculate painting dimensions
+    $topLeft = $rawPixelCorners[0];
+    $topRight = $rawPixelCorners[1];
+    $bottomRight = $rawPixelCorners[2];
+    $bottomLeft = $rawPixelCorners[3];
+    
+    $topWidth = sqrt(pow($topRight['x'] - $topLeft['x'], 2) + pow($topRight['y'] - $topLeft['y'], 2));
+    $bottomWidth = sqrt(pow($bottomRight['x'] - $bottomLeft['x'], 2) + pow($bottomRight['y'] - $bottomLeft['y'], 2));
+    $paintingWidth = ($topWidth + $bottomWidth) / 2;
+    
+    $leftHeight = sqrt(pow($bottomLeft['x'] - $topLeft['x'], 2) + pow($bottomLeft['y'] - $topLeft['y'], 2));
+    $rightHeight = sqrt(pow($bottomRight['x'] - $topRight['x'], 2) + pow($bottomRight['y'] - $topRight['y'], 2));
+    $paintingHeight = ($leftHeight + $rightHeight) / 2;
+    
+    // Apply offset
+    $offsetX = ($offsetPercent / 100) * $paintingWidth;
+    $offsetY = ($offsetPercent / 100) * $paintingHeight;
+    
+    $pixelCorners = [];
+    foreach ($rawPixelCorners as $idx => $corner) {
+        $xPixel = $corner['x'];
+        $yPixel = $corner['y'];
+        
+        switch ($idx) {
+            case 0: $xPixel += $offsetX; $yPixel += $offsetY; break;
+            case 1: $xPixel -= $offsetX; $yPixel += $offsetY; break;
+            case 2: $xPixel -= $offsetX; $yPixel -= $offsetY; break;
+            case 3: $xPixel += $offsetX; $yPixel -= $offsetY; break;
+        }
+        
+        $xPixel = max(0, min($imgW - 1, round($xPixel)));
+        $yPixel = max(0, min($imgH - 1, round($yPixel)));
+        
+        $xPercent = ($xPixel / $imgW) * 100;
+        $yPercent = ($yPixel / $imgH) * 100;
+        
+        $pixelCorners[] = [
+            'x' => $xPixel,
+            'y' => $yPixel,
+            'x_percent' => $xPercent,
+            'y_percent' => $yPercent,
+            'label' => $corner['label']
+        ];
+    }
+    
+    $resultCorners = [
+        [$pixelCorners[0]['x'], $pixelCorners[0]['y']],
+        [$pixelCorners[1]['x'], $pixelCorners[1]['y']],
+        [$pixelCorners[2]['x'], $pixelCorners[2]['y']],
+        [$pixelCorners[3]['x'], $pixelCorners[3]['y']]
+    ];
+    
+    // Save offset, corners_used, and update status
+    $meta = [];
+    if (is_file($jsonPath)) {
+        $content = @file_get_contents($jsonPath);
+        if ($content !== false) {
+            $decoded = json_decode($content, true);
+            if (is_array($decoded)) {
+                $meta = $decoded;
+            }
+        }
+    }
+    $aiCorners = $meta['ai_corners'] ?? [];
+    $aiCorners['offset_percent'] = $offsetPercent;
+    $aiCorners['corners_used'] = $resultCorners;
+    $aiCorners['status'] = 'completed';
+    $aiCorners['completed_at'] = date('c');
+    update_json_file($jsonPath, ['ai_corners' => $aiCorners], false);
+    
+    return [
+        'ok' => true,
+        'completed' => true,
+        'corners' => $resultCorners,
+        'corners_with_percentages' => $pixelCorners
+    ];
+}
 
 /**
  * Calculate corners for an image using AI (Replicate/Gemini)
@@ -44,28 +429,34 @@ function calculate_corners(string $imagePath, float $offsetPercent = 1.0): array
     $imagesDir = dirname($abs);
     $jsonPath = get_meta_path($imageFilename, $imagesDir);
     $existingJson = load_meta($imageFilename, $imagesDir);
+    $aiCorners = $existingJson['ai_corners'] ?? [];
     $cachedResponse = null;
-    if (isset($existingJson['corner_detection']) && 
-        isset($existingJson['corner_detection']['replicate_response']) && 
-        is_array($existingJson['corner_detection']['replicate_response'])) {
+    if (isset($aiCorners['replicate_response']) && 
+        is_array($aiCorners['replicate_response'])) {
         // Use cached Replicate response
-        $cachedResponse = $existingJson['corner_detection']['replicate_response'];
+        $cachedResponse = $aiCorners['replicate_response'];
     }
 
-    // If we have cached response, use it and skip API call
-    // But always recalculate corners (don't cache computed values)
-    $resp = null;
-    $status = null;
-    $attempt = 0;
+    // Check if we already have a prediction URL (prediction already started)
+    $predictionUrl = $aiCorners['prediction_url'] ?? null;
+    if ($predictionUrl && is_string($predictionUrl)) {
+        // Prediction already started - return early
+        return [
+            'ok' => true,
+            'prediction_started' => true,
+            'url' => $predictionUrl,
+            'message' => 'Prediction already in progress'
+        ];
+    }
     
+    // If we have cached succeeded response, use it and process normally
     if ($cachedResponse !== null && isset($cachedResponse['status']) && $cachedResponse['status'] === 'succeeded') {
-        // Use cached response and skip to processing (will recalculate corners)
-        $resp = $cachedResponse;
-        $status = $resp['status'];
-    } else {
+        // Use cached response and process it (will recalculate corners)
+        return process_completed_corner_prediction($jsonPath, $cachedResponse, $offsetPercent);
+    }
 
-        // ---- Prompt for corner detection ----
-        $prompt = <<<PROMPT
+    // ---- Prompt for corner detection ----
+    $prompt = <<<PROMPT
 Analyze this image and identify the four corners of the painting canvas (excluding frame, wall, mat, glass, shadows).
 
 Return the coordinates as percentages relative to the image dimensions in JSON format:
@@ -86,469 +477,86 @@ The coordinates should be percentages (0-100) where:
 Return ONLY valid JSON, no other text.
 PROMPT;
 
-        // ---- Replicate API Call (Google Gemini 3 Pro) ----
-        // Using the structure for gemini-3-pro
-        $payload = [
-            'input' => [
-                'images' => ["data:$mime;base64,$imgB64"],
-                'max_output_tokens' => 65535,
-                'prompt' => $prompt,
-                'temperature' => 1,
-                'thinking_level' => 'low',
-                'top_p' => 0.95,
-                'videos' => []
-            ]
-        ];
+    // ---- Replicate API Call (Google Gemini 3 Pro) ----
+    $payload = [
+        'input' => [
+            'images' => ["data:$mime;base64,$imgB64"],
+            'max_output_tokens' => 65535,
+            'prompt' => $prompt,
+            'temperature' => 1,
+            'thinking_level' => 'low',
+            'top_p' => 0.95,
+            'videos' => []
+        ]
+    ];
 
-        try {
-            // Step 1: Create prediction (without waiting)
-            $ch = curl_init("https://api.replicate.com/v1/models/google/gemini-3-pro/predictions");
-            curl_setopt_array($ch, [
-                CURLOPT_HTTPHEADER => ["Authorization: Token $TOKEN", "Content-Type: application/json"],
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => json_encode($payload),
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_MAXREDIRS => 5,
-                CURLOPT_TIMEOUT => 30
-            ]);
-            
-            $res = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $err = curl_error($ch);
-            curl_close($ch);
-    
-            if ($res === false || $httpCode >= 400) {
-                return [
-                    'ok' => false,
-                    'error' => 'replicate_failed',
-                    'detail' => $err ?: $res,
-                    'http_code' => $httpCode
-                ];
-            }
-            
-            $resp = json_decode($res, true);
-            if (!is_array($resp) || !isset($resp['urls']['get'])) {
-                return ['ok' => false, 'error' => 'invalid_prediction_response', 'sample' => substr($res, 0, 500)];
-            }
-            
-            $predictionUrl = $resp['urls']['get'];
-            $status = $resp['status'] ?? 'unknown';
-            
-            // Step 2: Poll until prediction completes (max 10 minutes)
-            $maxAttempts = 120; // 120 attempts * 5 seconds = 10 minutes max
-            $attempt = 0;
-    
-            while (in_array($status, ['starting', 'processing']) && $attempt < $maxAttempts) {
-                sleep(5); // Wait 5 seconds between polls
-                $attempt++;
-                
-                $ch = curl_init($predictionUrl);
-                curl_setopt_array($ch, [
-                    CURLOPT_HTTPHEADER => ["Authorization: Token $TOKEN"],
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_TIMEOUT => 30
-                ]);
-                
-                $res = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_close($ch);
-                
-                if ($res === false || $httpCode >= 400) {
-                    continue; // Retry on error
-                }
-                
-                $resp = json_decode($res, true);
-                if (!is_array($resp)) {
-                    continue; // Retry on invalid JSON
-                }
-                
-                $status = $resp['status'] ?? 'unknown';
-                
-                // If completed or failed, save response IMMEDIATELY and break the loop
-                if ($status === 'succeeded' || $status === 'failed' || $status === 'canceled') {
-                    // Save the response IMMEDIATELY after receiving it (before any further processing)
-                    // Use thread-safe update function to preserve all existing data
-                    $cornerDetectionData = [
-                        'replicate_response_raw' => json_encode($resp, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-                        'replicate_response' => $resp, // Also store as array for easier access
-                        'timestamp' => date('c'),
-                        'status' => $status,
-                        'attempts' => $attempt
-                    ];
-                    
-                    // Update only corner_detection section, preserve everything else
-                    update_json_file($jsonPath, ['corner_detection' => $cornerDetectionData], false);
-                    
-                    break;
-                }
-            }
-        } catch (Throwable $e) {
-            return ['ok' => false, 'error' => 'replicate_api_error', 'detail' => $e->getMessage()];
-        }
-    }
-    
-    // Step 4: Check final status and extract output
-    if ($status !== 'succeeded') {
-        return [
-            'ok' => false,
-            'error' => 'prediction_not_completed',
-            'status' => $status,
-            'detail' => $resp['error'] ?? 'Prediction did not complete in time',
-            'attempts' => $attempt
-        ];
-    }
-    
-    // Extract text from Replicate/Gemini response
-    $outputText = '';
-    if (isset($resp['output'])) {
-        if (is_array($resp['output'])) {
-            // Join without spaces to avoid breaking JSON (numbers can be split across array elements)
-            $outputText = implode('', $resp['output']);
-        } else {
-            $outputText = (string)$resp['output'];
-        }
-    }
-    
-    if (empty($outputText)) {
-        return ['ok' => false, 'error' => 'empty_output', 'response' => $resp];
-    }
-    
-    // Try to extract JSON from the response
-    $cornersData = null;
-    
-    // Step 1: Try to extract JSON from code blocks (```json ... ```)
-    // Match code blocks with proper brace matching
-    if (preg_match('/```(?:json)?\s*(\{.*)\s*```/s', $outputText, $matches)) {
-        $jsonStr = $matches[1];
+    try {
+        // Create prediction (without waiting)
+        $ch = curl_init("https://api.replicate.com/v1/models/google/gemini-3-pro/predictions");
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER => ["Authorization: Token $TOKEN", "Content-Type: application/json"],
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_TIMEOUT => 30
+        ]);
         
-        // Find the complete JSON object by matching braces
-        $braceCount = 0;
-        $jsonEnd = 0;
-        $inString = false;
-        $escapeNext = false;
-        
-        for ($i = 0; $i < strlen($jsonStr); $i++) {
-            $char = $jsonStr[$i];
-            
-            if ($escapeNext) {
-                $escapeNext = false;
-                continue;
-            }
-            
-            if ($char === '\\') {
-                $escapeNext = true;
-                continue;
-            }
-            
-            if ($char === '"' && !$escapeNext) {
-                $inString = !$inString;
-                continue;
-            }
-            
-            if (!$inString) {
-                if ($char === '{') {
-                    $braceCount++;
-                } elseif ($char === '}') {
-                    $braceCount--;
-                    if ($braceCount === 0) {
-                        $jsonEnd = $i + 1;
-                        break;
-                    }
-                }
-            }
-        }
-        
-        if ($braceCount === 0 && $jsonEnd > 0) {
-            $jsonStr = substr($jsonStr, 0, $jsonEnd);
-            // Clean up the JSON string - handle various split cases from array joining
-            
-            // Fix split quotes in keys: "y" "\": 87.6 -> "y": 87.6
-            $jsonStr = preg_replace('/"(\w+)"\s*"\s*\\\?":/', '"$1":', $jsonStr);
-            
-            // Fix split quotes in values: "label\":" "top-left" -> "label":"top-left"
-            $jsonStr = preg_replace('/:\s*"\s*"([^"]+)"/', ': "$1"', $jsonStr);
-            
-            // Fix split numbers: "y\": 8" "7.6 -> "y": 87.6
-            $jsonStr = preg_replace('/:\s*(\d+)"\s*"(\d+\.\d+)/', ': $1$2', $jsonStr);
-            $jsonStr = preg_replace('/:\s*(\d+\.\d+)"\s*"(\d+)/', ': $1$2', $jsonStr);
-            
-            // Remove spaces in numeric values (e.g., "87. 5" -> "87.5")
-            $jsonStr = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $jsonStr);
-            $jsonStr = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $jsonStr);
-            $jsonStr = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $jsonStr);
-            $jsonStr = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $jsonStr);
-            
-            // Fix any remaining quote splits
-            $jsonStr = preg_replace('/"\s*"([^"]+)"/', '"$1"', $jsonStr);
-            
-            $cornersData = json_decode($jsonStr, true);
-        }
-    }
-    
-    // Step 2: If that fails, try parsing the whole output as JSON
-    if ($cornersData === null || !is_array($cornersData)) {
-        $cleanedOutput = $outputText;
-        // Clean up spaces in numeric values and split numbers
-        $cleanedOutput = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $cleanedOutput);
-        $cleanedOutput = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $cleanedOutput);
-        $cleanedOutput = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $cleanedOutput);
-        $cleanedOutput = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $cleanedOutput);
-        $cleanedOutput = preg_replace('/"\s+"([^"]+)"/', '"$1"', $cleanedOutput);
-        $cornersData = json_decode($cleanedOutput, true);
-    }
-    
-    // Step 3: If that fails, try to extract JSON using brace matching
-    if ($cornersData === null || !is_array($cornersData)) {
-        // Find JSON object boundaries by matching braces properly
-        $jsonStart = strpos($outputText, '{');
-        if ($jsonStart !== false) {
-            $braceCount = 0;
-            $jsonEnd = $jsonStart;
-            $inString = false;
-            $escapeNext = false;
-            
-            for ($i = $jsonStart; $i < strlen($outputText); $i++) {
-                $char = $outputText[$i];
-                
-                if ($escapeNext) {
-                    $escapeNext = false;
-                    continue;
-                }
-                
-                if ($char === '\\') {
-                    $escapeNext = true;
-                    continue;
-                }
-                
-                if ($char === '"' && !$escapeNext) {
-                    $inString = !$inString;
-                    continue;
-                }
-                
-                if (!$inString) {
-                    if ($char === '{') {
-                        $braceCount++;
-                    } elseif ($char === '}') {
-                        $braceCount--;
-                        if ($braceCount === 0) {
-                            $jsonEnd = $i + 1;
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            if ($braceCount === 0 && $jsonEnd > $jsonStart) {
-                $jsonStr = substr($outputText, $jsonStart, $jsonEnd - $jsonStart);
-                // Clean up spaces in numeric values and split numbers
-                $jsonStr = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $jsonStr);
-                $jsonStr = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $jsonStr);
-                $jsonStr = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $jsonStr);
-                $jsonStr = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $jsonStr);
-                $jsonStr = preg_replace('/"\s+"([^"]+)"/', '"$1"', $jsonStr);
-                $cornersData = json_decode($jsonStr, true);
-            }
-        }
-    }
-    
-    // Step 4: Last resort - try regex extraction
-    if ($cornersData === null || !is_array($cornersData)) {
-        if (preg_match('/(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})/s', $outputText, $matches)) {
-            foreach ($matches as $match) {
-                // Clean up spaces in numeric values and split numbers
-                $cleanedMatch = preg_replace('/(\d+)\s+\.\s*(\d+)/', '$1.$2', $match);
-                $cleanedMatch = preg_replace('/(\d+)\s*\.\s+(\d+)/', '$1.$2', $cleanedMatch);
-                $cleanedMatch = preg_replace('/(\d+)\s+(\d+\.\d+)/', '$1$2', $cleanedMatch);
-                $cleanedMatch = preg_replace('/(\d+\.\d+)\s+(\d+)/', '$1$2', $cleanedMatch);
-                $cleanedMatch = preg_replace('/"\s+"([^"]+)"/', '"$1"', $cleanedMatch);
-                $decoded = json_decode($cleanedMatch, true);
-                if (is_array($decoded) && isset($decoded['corners'])) {
-                    $cornersData = $decoded;
-                    break;
-                }
-            }
-        }
-    }
-    
-    if (!is_array($cornersData) || !isset($cornersData['corners']) || !is_array($cornersData['corners'])) {
-        return [
-            'ok' => false,
-            'error' => 'invalid_corners_format',
-            'output_text' => substr($outputText, 0, 1000),
-            'parsed' => $cornersData,
-            'output_length' => strlen($outputText)
-        ];
-    }
-    
-    // Ensure we have exactly 4 corners in the parsed data
-    if (count($cornersData['corners']) !== 4) {
-        return [
-            'ok' => false,
-            'error' => 'invalid_corner_count_in_response',
-            'count' => count($cornersData['corners']),
-            'raw_corners' => $cornersData['corners'],
-            'output_text' => substr($outputText, 0, 500)
-        ];
-    }
-    
-    // Convert percentages to pixel coordinates
-    // Offset to move corners inward (to account for painting border/inset)
-    // Offset is set from POST parameter above (default: 1.0 percent)
-    // The offset percentage is based on the painting dimensions, not the image dimensions
-    
-    // First, convert all corners from percentages to pixels (without offset)
-    $rawPixelCorners = [];
-    $cornerIndex = 0;
-    foreach ($cornersData['corners'] as $corner) {
-        // Normalize keys by trimming whitespace (handles cases like " y" instead of "y")
-        $normalizedCorner = [];
-        foreach ($corner as $key => $value) {
-            $normalizedKey = trim($key);
-            $normalizedCorner[$normalizedKey] = $value;
-        }
-        
-        // Try to get x and y values, checking both normalized and original keys
-        $xPercent = null;
-        $yPercent = null;
-        
-        if (isset($normalizedCorner['x'])) {
-            $xPercent = (float)$normalizedCorner['x'];
-        } elseif (isset($corner['x'])) {
-            $xPercent = (float)$corner['x'];
-        }
-        
-        if (isset($normalizedCorner['y'])) {
-            $yPercent = (float)$normalizedCorner['y'];
-        } elseif (isset($corner['y'])) {
-            $yPercent = (float)$corner['y'];
-        }
-        
-        if ($xPercent === null || $yPercent === null) {
+        $res = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($res === false || $httpCode >= 400) {
+            require_once __DIR__ . '/meta.php';
+            update_task_status($jsonPath, 'ai_corners', 'wanted');
             return [
                 'ok' => false,
-                'error' => 'missing_corner_coordinates',
-                'corner' => $corner,
-                'normalized_corner' => $normalizedCorner,
-                'all_corners' => $cornersData['corners']
+                'error' => 'replicate_failed',
+                'detail' => $err ?: $res,
+                'http_code' => $httpCode
             ];
         }
         
-        // Convert percentage to pixels (without offset yet)
-        $xPixel = round(($xPercent / 100) * $imgW);
-        $yPixel = round(($yPercent / 100) * $imgH);
-        
-        $rawPixelCorners[] = [
-            'x' => $xPixel,
-            'y' => $yPixel,
-            'x_percent' => $xPercent,
-            'y_percent' => $yPercent,
-            'label' => trim(strtolower($normalizedCorner['label'] ?? $corner['label'] ?? ''))
-        ];
-        $cornerIndex++;
-    }
-    
-    // Calculate painting dimensions based on corner positions
-    // top-left (0), top-right (1), bottom-right (2), bottom-left (3)
-    $topLeft = $rawPixelCorners[0];
-    $topRight = $rawPixelCorners[1];
-    $bottomRight = $rawPixelCorners[2];
-    $bottomLeft = $rawPixelCorners[3];
-    
-    // Calculate average width (top and bottom edges)
-    $topWidth = sqrt(pow($topRight['x'] - $topLeft['x'], 2) + pow($topRight['y'] - $topLeft['y'], 2));
-    $bottomWidth = sqrt(pow($bottomRight['x'] - $bottomLeft['x'], 2) + pow($bottomRight['y'] - $bottomLeft['y'], 2));
-    $paintingWidth = ($topWidth + $bottomWidth) / 2;
-    
-    // Calculate average height (left and right edges)
-    $leftHeight = sqrt(pow($bottomLeft['x'] - $topLeft['x'], 2) + pow($bottomLeft['y'] - $topLeft['y'], 2));
-    $rightHeight = sqrt(pow($bottomRight['x'] - $topRight['x'], 2) + pow($bottomRight['y'] - $topRight['y'], 2));
-    $paintingHeight = ($leftHeight + $rightHeight) / 2;
-    
-    // Calculate offset in pixels based on painting dimensions
-    $offsetX = ($offsetPercent / 100) * $paintingWidth;
-    $offsetY = ($offsetPercent / 100) * $paintingHeight;
-    
-    // Apply offset to move corners inward based on corner position
-    // 0: top-left -> move right and down
-    // 1: top-right -> move left and down
-    // 2: bottom-right -> move left and up
-    // 3: bottom-left -> move right and up
-    $pixelCorners = [];
-    foreach ($rawPixelCorners as $idx => $corner) {
-        $xPixel = $corner['x'];
-        $yPixel = $corner['y'];
-        
-        switch ($idx) {
-            case 0: // top-left
-                $xPixel += $offsetX; // Move right
-                $yPixel += $offsetY; // Move down
-                break;
-            case 1: // top-right
-                $xPixel -= $offsetX; // Move left
-                $yPixel += $offsetY; // Move down
-                break;
-            case 2: // bottom-right
-                $xPixel -= $offsetX; // Move left
-                $yPixel -= $offsetY; // Move up
-                break;
-            case 3: // bottom-left
-                $xPixel += $offsetX; // Move right
-                $yPixel -= $offsetY; // Move up
-                break;
+        $resp = json_decode($res, true);
+        if (!is_array($resp) || !isset($resp['urls']['get'])) {
+            require_once __DIR__ . '/meta.php';
+            update_task_status($jsonPath, 'ai_corners', 'wanted');
+            return ['ok' => false, 'error' => 'invalid_prediction_response', 'sample' => substr($res, 0, 500)];
         }
         
-        // Ensure pixels stay within image bounds
-        $xPixel = max(0, min($imgW - 1, round($xPixel)));
-        $yPixel = max(0, min($imgH - 1, round($yPixel)));
+        $predictionUrl = $resp['urls']['get'];
+        $predictionId = $resp['id'] ?? null;
+        $status = $resp['status'] ?? 'unknown';
         
-        // Convert back to percentages for storage
-        $xPercent = ($xPixel / $imgW) * 100;
-        $yPercent = ($yPixel / $imgH) * 100;
+        // Save prediction URL immediately - update ai_corners object
+        require_once __DIR__ . '/meta.php';
+        $aiCorners = $existingJson['ai_corners'] ?? [];
+        $aiCorners['prediction_url'] = $predictionUrl;
+        $aiCorners['prediction_id'] = $predictionId;
+        $aiCorners['prediction_status'] = $status;
+        $aiCorners['timestamp'] = date('c');
+        update_json_file($jsonPath, [
+            'ai_corners' => $aiCorners
+        ], false);
         
-        $pixelCorners[] = [
-            'x' => $xPixel,
-            'y' => $yPixel,
-            'x_percent' => $xPercent,
-            'y_percent' => $yPercent,
-            'label' => $corner['label']
-        ];
-    }
-    
-    // Ensure we have exactly 4 corners after processing
-    if (count($pixelCorners) !== 4) {
+        // Set status to in_progress
+        update_task_status($jsonPath, 'ai_corners', 'in_progress');
+        
+        // Return early - polling will happen in background task processor
         return [
-            'ok' => false,
-            'error' => 'invalid_corner_count_after_processing',
-            'count' => count($pixelCorners),
-            'corners' => $pixelCorners,
-            'raw_corners_count' => count($cornersData['corners'])
+            'ok' => true,
+            'prediction_started' => true,
+            'url' => $predictionUrl,
+            'id' => $predictionId,
+            'status' => $status
         ];
+    } catch (Throwable $e) {
+        require_once __DIR__ . '/meta.php';
+        update_task_status($jsonPath, 'ai_corners', 'wanted');
+        return ['ok' => false, 'error' => 'replicate_api_error', 'detail' => $e->getMessage()];
     }
-    
-    // Return in the same format as corners.php (array of [x, y] pairs)
-    $resultCorners = [
-        [$pixelCorners[0]['x'], $pixelCorners[0]['y']], // top-left
-        [$pixelCorners[1]['x'], $pixelCorners[1]['y']], // top-right
-        [$pixelCorners[2]['x'], $pixelCorners[2]['y']], // bottom-right
-        [$pixelCorners[3]['x'], $pixelCorners[3]['y']]  // bottom-left
-    ];
-    
-    // Save offset to JSON file (for tracking which offset was used)
-    // Use thread-safe update function to preserve all existing data
-    update_json_file($jsonPath, ['corner_detection.offset_percent' => $offsetPercent], false);
-    
-    return [
-        'ok' => true,
-        'corners' => $resultCorners,
-        'original_corners' => $resultCorners, // Alias for compatibility with free.html
-        'corners_with_percentages' => $pixelCorners,
-        'image_width' => $imgW,
-        'image_height' => $imgH,
-        'source' => $rel,
-        'offset_percent' => $offsetPercent,
-        'cached' => ($cachedResponse !== null)
-    ];
 }
 
 // HTTP endpoint - for backward compatibility

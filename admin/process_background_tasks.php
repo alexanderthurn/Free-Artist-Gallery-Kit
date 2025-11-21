@@ -135,8 +135,10 @@ function check_variant_regeneration_needed(string $baseName, string $jsonPath, s
  * Check if AI generation is needed
  */
 function check_ai_generation_needed(array $meta): array {
-    $cornersStatus = $meta['ai_corners_status'] ?? null;
-    $formStatus = $meta['ai_form_status'] ?? null;
+    $aiCorners = $meta['ai_corners'] ?? [];
+    $aiFillForm = $meta['ai_fill_form'] ?? [];
+    $cornersStatus = $aiCorners['status'] ?? null;
+    $formStatus = $aiFillForm['status'] ?? null;
     $needs = ['corners' => false, 'form' => false];
     
     // Check corners status
@@ -206,9 +208,113 @@ function process_variant_regeneration(string $baseName, string $jsonPath): array
  */
 function process_ai_corners(string $baseName, string $jsonPath): array {
     $imagesDir = __DIR__ . '/images';
+    
+    // Load metadata to check for prediction URL
+    $imageFilename = basename($jsonPath, '.json');
+    $meta = load_meta($imageFilename, $imagesDir);
+    
+    // Check if prediction URL exists and status is in_progress
+    $aiCorners = $meta['ai_corners'] ?? [];
+    $predictionUrl = $aiCorners['prediction_url'] ?? null;
+    $cornersStatus = $aiCorners['status'] ?? null;
+    
+    if ($predictionUrl && is_string($predictionUrl) && $cornersStatus === 'in_progress') {
+        // Poll the prediction once
+        require_once __DIR__ . '/ai_calc_corners.php';
+        $pollResult = poll_corner_prediction($jsonPath, 1.0);
+        
+        if (isset($pollResult['still_processing']) && $pollResult['still_processing']) {
+            // Still processing - skip for now, will check again next run
+            return ['ok' => true, 'still_processing' => true, 'message' => 'Prediction still in progress'];
+        }
+        
+        if (isset($pollResult['completed']) && $pollResult['completed']) {
+            // Prediction completed - corners are saved, now create final image
+            $originalImage = null;
+            $files = scandir($imagesDir) ?: [];
+            foreach ($files as $file) {
+                if ($file === '.' || $file === '..') continue;
+                $fileStem = pathinfo($file, PATHINFO_FILENAME);
+                if (strpos($fileStem, $baseName.'_original') === 0) {
+                    $originalImage = $imagesDir . '/' . $file;
+                    break;
+                }
+            }
+            
+            if (!$originalImage || !is_file($originalImage)) {
+                return ['ok' => false, 'error' => 'Original image not found'];
+            }
+            
+            // Process the corners to create final image
+            // calculate_corners() will use the cached succeeded response
+            require_once __DIR__ . '/ai_image_by_corners.php';
+            $imagePath = 'admin/images/' . basename($originalImage);
+            $result = process_ai_image_by_corners($imagePath, 1.0);
+            
+            if ($result['ok']) {
+                return ['ok' => true, 'result' => $result];
+            } else {
+                return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
+            }
+        }
+        
+        // Polling failed or prediction failed
+        return ['ok' => false, 'error' => $pollResult['error'] ?? 'Polling failed'];
+    }
+    
+    // Check if status is completed but final image doesn't exist yet
+    if ($cornersStatus === 'completed') {
+        $cornersUsed = $aiCorners['corners_used'] ?? null;
+        if ($cornersUsed && is_array($cornersUsed) && count($cornersUsed) === 4) {
+            // Check if final image exists
+            $finalImage = null;
+            $files = scandir($imagesDir) ?: [];
+            foreach ($files as $file) {
+                if ($file === '.' || $file === '..') continue;
+                $fileStem = pathinfo($file, PATHINFO_FILENAME);
+                if (strpos($fileStem, $baseName.'_final') === 0) {
+                    $finalImage = $imagesDir . '/' . $file;
+                    break;
+                }
+            }
+            
+            if (!$finalImage || !is_file($finalImage)) {
+                // Corners are completed but final image doesn't exist - create it
+                $originalImage = null;
+                foreach ($files as $file) {
+                    if ($file === '.' || $file === '..') continue;
+                    $fileStem = pathinfo($file, PATHINFO_FILENAME);
+                    if (strpos($fileStem, $baseName.'_original') === 0) {
+                        $originalImage = $imagesDir . '/' . $file;
+                        break;
+                    }
+                }
+                
+                if (!$originalImage || !is_file($originalImage)) {
+                    return ['ok' => false, 'error' => 'Original image not found'];
+                }
+                
+                // Process the corners to create final image
+                // calculate_corners() will use the cached succeeded response
+                require_once __DIR__ . '/ai_image_by_corners.php';
+                $imagePath = 'admin/images/' . basename($originalImage);
+                $result = process_ai_image_by_corners($imagePath, $aiCorners['offset_percent'] ?? 1.0);
+                
+                if ($result['ok']) {
+                    return ['ok' => true, 'result' => $result, 'message' => 'Final image created'];
+                } else {
+                    return ['ok' => false, 'error' => $result['error'] ?? 'Unknown error'];
+                }
+            }
+            
+            // Final image already exists - nothing to do
+            return ['ok' => true, 'skipped' => true, 'message' => 'Final image already exists'];
+        }
+    }
+    
+    // No prediction URL exists - start new prediction
     $originalImage = null;
     $files = scandir($imagesDir) ?: [];
-    
     foreach ($files as $file) {
         if ($file === '.' || $file === '..') continue;
         $fileStem = pathinfo($file, PATHINFO_FILENAME);
@@ -226,12 +332,16 @@ function process_ai_corners(string $baseName, string $jsonPath): array {
     update_task_status($jsonPath, 'ai_corners', 'in_progress');
     
     try {
-        // Call function directly instead of HTTP
+        // Call function directly - it will start prediction and return early
         require_once __DIR__ . '/ai_image_by_corners.php';
         $imagePath = 'admin/images/' . basename($originalImage);
         $result = process_ai_image_by_corners($imagePath, 1.0);
         
         if ($result['ok']) {
+            if (isset($result['prediction_started']) && $result['prediction_started']) {
+                // Prediction started - will be polled in next run
+                return ['ok' => true, 'prediction_started' => true, 'message' => 'Prediction started'];
+            }
             // Status is already updated to completed in process_ai_image_by_corners
             return ['ok' => true, 'result' => $result];
         } else {
@@ -250,6 +360,35 @@ function process_ai_corners(string $baseName, string $jsonPath): array {
 function process_ai_form(string $baseName, string $jsonPath): array {
     $imagesDir = __DIR__ . '/images';
     
+    // Load metadata to check for prediction URL
+    $imageFilename = basename($jsonPath, '.json');
+    $meta = load_meta($imageFilename, $imagesDir);
+    
+    // Check if prediction URL exists and status is in_progress
+    $aiFillForm = $meta['ai_fill_form'] ?? [];
+    $predictionUrl = $aiFillForm['prediction_url'] ?? null;
+    $formStatus = $aiFillForm['status'] ?? null;
+    
+    if ($predictionUrl && is_string($predictionUrl) && $formStatus === 'in_progress') {
+        // Poll the prediction once
+        require_once __DIR__ . '/ai_fill_form.php';
+        $pollResult = poll_form_prediction($jsonPath);
+        
+        if (isset($pollResult['still_processing']) && $pollResult['still_processing']) {
+            // Still processing - skip for now, will check again next run
+            return ['ok' => true, 'still_processing' => true, 'message' => 'Prediction still in progress'];
+        }
+        
+        if (isset($pollResult['completed']) && $pollResult['completed']) {
+            // Prediction completed - form data already saved by poll_form_prediction
+            return ['ok' => true, 'result' => $pollResult];
+        }
+        
+        // Polling failed or prediction failed
+        return ['ok' => false, 'error' => $pollResult['error'] ?? 'Polling failed'];
+    }
+    
+    // No prediction URL exists - start new prediction
     // Find _final or _original image
     $imageFile = null;
     $files = scandir($imagesDir) ?: [];
@@ -281,11 +420,15 @@ function process_ai_form(string $baseName, string $jsonPath): array {
     update_task_status($jsonPath, 'ai_form', 'in_progress');
     
     try {
-        // Call function directly instead of HTTP
+        // Call function directly - it will start prediction and return early
         require_once __DIR__ . '/ai_fill_form.php';
         $result = process_ai_fill_form($imageFile);
         
         if ($result['ok']) {
+            if (isset($result['prediction_started']) && $result['prediction_started']) {
+                // Prediction started - will be polled in next run
+                return ['ok' => true, 'prediction_started' => true, 'message' => 'Prediction started'];
+            }
             // Status is already updated to completed in process_ai_fill_form
             return ['ok' => true, 'result' => $result];
         } else {
@@ -600,11 +743,17 @@ foreach ($jsonFiles as $item) {
         continue;
     }
     
-    $cornersStatus = $meta['ai_corners_status'] ?? null;
+    $aiCorners = $meta['ai_corners'] ?? [];
+    $cornersStatus = $aiCorners['status'] ?? null;
     error_log('[Background Tasks] ' . $baseName . ': AI corners status: ' . ($cornersStatus ?? 'null'));
     
-    if ($cornersStatus === 'in_progress' && is_task_in_progress($meta, 'ai_corners')) {
-        error_log('[Background Tasks] ' . $baseName . ': Skipping AI corners (already in progress)');
+    // Check if there's a prediction URL - if so, we should poll it even if task is in_progress
+    $hasPredictionUrl = isset($aiCorners['prediction_url']) && 
+                        is_string($aiCorners['prediction_url']);
+    
+    // Only skip if in_progress AND not stale AND no prediction_url (meaning it's actively being processed synchronously)
+    if ($cornersStatus === 'in_progress' && is_task_in_progress($meta, 'ai_corners') && !$hasPredictionUrl) {
+        error_log('[Background Tasks] ' . $baseName . ': Skipping AI corners (already in progress, no prediction URL)');
         $originalImageFile = null;
         $files = scandir($imagesDir) ?: [];
         foreach ($files as $file) {
@@ -641,6 +790,17 @@ foreach ($jsonFiles as $item) {
     error_log('[Background Tasks] ' . $baseName . ': Processing AI corners (image: ' . ($originalImageFile ?? $baseName . '_original.jpg') . ')');
     $result = process_ai_corners($baseName, $jsonPath);
     if ($result['ok']) {
+        if (isset($result['still_processing']) && $result['still_processing']) {
+            error_log('[Background Tasks] ' . $baseName . ': AI corners still processing, will check again next run');
+            $results['skipped'][] = [
+                'base' => $baseName,
+                'task' => 'ai_corners',
+                'reason' => 'still_processing',
+                'image' => $originalImageFile ?? $baseName . '_original.jpg',
+                'ai_task' => 'corner_detection'
+            ];
+            continue;
+        }
         error_log('[Background Tasks] ' . $baseName . ': AI corners completed successfully');
         $results['processed'][] = [
             'base' => $baseName,
@@ -686,11 +846,17 @@ foreach ($jsonFiles as $item) {
         continue;
     }
     
-    $formStatus = $meta['ai_form_status'] ?? null;
+    $aiFillForm = $meta['ai_fill_form'] ?? [];
+    $formStatus = $aiFillForm['status'] ?? null;
     error_log('[Background Tasks] ' . $baseName . ': AI form status: ' . ($formStatus ?? 'null'));
     
-    if ($formStatus === 'in_progress' && is_task_in_progress($meta, 'ai_form')) {
-        error_log('[Background Tasks] ' . $baseName . ': Skipping AI form (already in progress)');
+    // Check if there's a prediction URL - if so, we should poll it even if task is in_progress
+    $hasPredictionUrl = isset($aiFillForm['prediction_url']) && 
+                        is_string($aiFillForm['prediction_url']);
+    
+    // Only skip if in_progress AND not stale AND no prediction_url (meaning it's actively being processed synchronously)
+    if ($formStatus === 'in_progress' && is_task_in_progress($meta, 'ai_form') && !$hasPredictionUrl) {
+        error_log('[Background Tasks] ' . $baseName . ': Skipping AI form (already in progress, no prediction URL)');
         $imageFile = null;
         $files = scandir($imagesDir) ?: [];
         foreach ($files as $file) {
@@ -747,6 +913,17 @@ foreach ($jsonFiles as $item) {
     error_log('[Background Tasks] ' . $baseName . ': Processing AI form (image: ' . ($imageFile ?? $baseName . '_final.jpg') . ')');
     $result = process_ai_form($baseName, $jsonPath);
     if ($result['ok']) {
+        if (isset($result['still_processing']) && $result['still_processing']) {
+            error_log('[Background Tasks] ' . $baseName . ': AI form still processing, will check again next run');
+            $results['skipped'][] = [
+                'base' => $baseName,
+                'task' => 'ai_form',
+                'reason' => 'still_processing',
+                'image' => $imageFile ?? $baseName . '_final.jpg',
+                'ai_task' => 'form_filling'
+            ];
+            continue;
+        }
         $extractedFields = isset($result['result']) ? array_keys($result['result']) : [];
         error_log('[Background Tasks] ' . $baseName . ': AI form completed successfully (extracted fields: ' . implode(', ', $extractedFields) . ')');
         $results['processed'][] = [

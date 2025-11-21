@@ -885,8 +885,9 @@ function is_task_in_progress(array $meta, string $taskType, int $maxMinutes = 10
     }
     
     if ($taskType === 'ai_corners') {
-        $status = $meta['ai_corners_status'] ?? null;
-        $startedAt = $meta['ai_corners_started_at'] ?? null;
+        $aiCorners = $meta['ai_corners'] ?? [];
+        $status = $aiCorners['status'] ?? null;
+        $startedAt = $aiCorners['started_at'] ?? null;
         
         if ($status !== 'in_progress') {
             return false;
@@ -906,8 +907,9 @@ function is_task_in_progress(array $meta, string $taskType, int $maxMinutes = 10
     }
     
     if ($taskType === 'ai_form') {
-        $status = $meta['ai_form_status'] ?? null;
-        $startedAt = $meta['ai_form_started_at'] ?? null;
+        $aiFillForm = $meta['ai_fill_form'] ?? [];
+        $status = $aiFillForm['status'] ?? null;
+        $startedAt = $aiFillForm['started_at'] ?? null;
         
         if ($status !== 'in_progress') {
             return false;
@@ -969,16 +971,33 @@ function get_pending_tasks_count(string $imagesDir): array {
         }
         
         // Check AI generation (corners and form separately)
-        $cornersStatus = $meta['ai_corners_status'] ?? null;
-        $formStatus = $meta['ai_form_status'] ?? null;
+        $aiCorners = $meta['ai_corners'] ?? [];
+        $aiFillForm = $meta['ai_fill_form'] ?? [];
+        $cornersStatus = $aiCorners['status'] ?? null;
+        $formStatus = $aiFillForm['status'] ?? null;
         
-        if ($cornersStatus === 'wanted' || 
-            ($cornersStatus === 'in_progress' && !is_task_in_progress($meta, 'ai_corners'))) {
+        // Count corners tasks: wanted OR in_progress (including those with prediction_url waiting for async completion)
+        if ($cornersStatus === 'wanted') {
             $counts['ai']++;
+        } elseif ($cornersStatus === 'in_progress') {
+            // Count if stale (needs retry) OR if it has a prediction_url (actively processing)
+            $hasPredictionUrl = isset($aiCorners['prediction_url']) && 
+                                is_string($aiCorners['prediction_url']);
+            if (!is_task_in_progress($meta, 'ai_corners') || $hasPredictionUrl) {
+                $counts['ai']++;
+            }
         }
-        if ($formStatus === 'wanted' || 
-            ($formStatus === 'in_progress' && !is_task_in_progress($meta, 'ai_form'))) {
+        
+        // Count form tasks: wanted OR in_progress (including those with prediction_url waiting for async completion)
+        if ($formStatus === 'wanted') {
             $counts['ai']++;
+        } elseif ($formStatus === 'in_progress') {
+            // Count if stale (needs retry) OR if it has a prediction_url (actively processing)
+            $hasPredictionUrl = isset($aiFillForm['prediction_url']) && 
+                                is_string($aiFillForm['prediction_url']);
+            if (!is_task_in_progress($meta, 'ai_form') || $hasPredictionUrl) {
+                $counts['ai']++;
+            }
         }
         
         // Check gallery publishing (simplified - would need more complex logic)
@@ -1013,27 +1032,57 @@ function update_task_status(string $jsonPath, string $taskType, string $status, 
             $updates['variant_regeneration_started_at'] = null;
         }
     } elseif ($taskType === 'ai_corners') {
-        $updates['ai_corners_status'] = $status;
+        // Load existing ai_corners object to preserve other fields
+        $existingMeta = [];
+        if (is_file($jsonPath)) {
+            $content = @file_get_contents($jsonPath);
+            if ($content !== false) {
+                $decoded = json_decode($content, true);
+                if (is_array($decoded)) {
+                    $existingMeta = $decoded;
+                }
+            }
+        }
+        $existingAiCorners = $existingMeta['ai_corners'] ?? [];
+        
+        $aiCorners = $existingAiCorners;
+        $aiCorners['status'] = $status;
         if ($status === 'in_progress') {
-            $updates['ai_corners_started_at'] = $startedAt ?? date('c');
+            $aiCorners['started_at'] = $startedAt ?? date('c');
         } elseif ($status === 'completed') {
-            $updates['ai_corners_completed_at'] = date('c');
+            $aiCorners['completed_at'] = date('c');
             // Keep started_at for history
         } elseif ($status === 'wanted') {
             // Clear started_at when resetting to wanted
-            $updates['ai_corners_started_at'] = null;
+            $aiCorners['started_at'] = null;
         }
+        $updates['ai_corners'] = $aiCorners;
     } elseif ($taskType === 'ai_form') {
-        $updates['ai_form_status'] = $status;
+        // Load existing ai_fill_form object to preserve other fields
+        $existingMeta = [];
+        if (is_file($jsonPath)) {
+            $content = @file_get_contents($jsonPath);
+            if ($content !== false) {
+                $decoded = json_decode($content, true);
+                if (is_array($decoded)) {
+                    $existingMeta = $decoded;
+                }
+            }
+        }
+        $existingAiFillForm = $existingMeta['ai_fill_form'] ?? [];
+        
+        $aiFillForm = $existingAiFillForm;
+        $aiFillForm['status'] = $status;
         if ($status === 'in_progress') {
-            $updates['ai_form_started_at'] = $startedAt ?? date('c');
+            $aiFillForm['started_at'] = $startedAt ?? date('c');
         } elseif ($status === 'completed') {
-            $updates['ai_form_completed_at'] = date('c');
+            $aiFillForm['completed_at'] = date('c');
             // Keep started_at for history
         } elseif ($status === 'wanted') {
             // Clear started_at when resetting to wanted
-            $updates['ai_form_started_at'] = null;
+            $aiFillForm['started_at'] = null;
         }
+        $updates['ai_fill_form'] = $aiFillForm;
     }
     
     return update_json_file($jsonPath, $updates, false);

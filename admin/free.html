@@ -285,10 +285,11 @@
             savedCorners = meta.manual_corners;
           }
           // Load saved offset if available
-          if (meta.corner_detection && meta.corner_detection.offset_percent !== undefined) {
+          const aiCorners = meta.ai_corners || {};
+          if (aiCorners.offset_percent !== undefined) {
             const offsetInput = document.getElementById('offsetInput');
             if (offsetInput) {
-              offsetInput.value = meta.corner_detection.offset_percent;
+              offsetInput.value = aiCorners.offset_percent;
             }
           }
         }

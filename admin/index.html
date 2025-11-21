@@ -361,13 +361,14 @@
       return imageUrl.replace(/\.(jpg|jpeg|png|gif|webp)$/i, '_thumb.$1');
     }
 
-    // Helper function to extract AI-generated corners from corner_detection data
+    // Helper function to extract AI-generated corners from ai_corners data
     function extractAICorners(meta) {
-      if (!meta.corner_detection || !meta.corner_detection.replicate_response) {
+      const aiCorners = meta.ai_corners || {};
+      if (!aiCorners.replicate_response) {
         return null;
       }
       
-      const replicateResponse = meta.corner_detection.replicate_response;
+      const replicateResponse = aiCorners.replicate_response;
       if (!replicateResponse.output || !Array.isArray(replicateResponse.output)) {
         return null;
       }
@@ -445,9 +446,9 @@
         if (cornersData && cornersData.corners && Array.isArray(cornersData.corners) && cornersData.corners.length === 4) {
           return {
             corners: cornersData.corners,
-            offset_percent: meta.corner_detection.offset_percent || 1.0,
-            timestamp: meta.corner_detection.timestamp,
-            status: meta.corner_detection.status
+            offset_percent: aiCorners.offset_percent || 1.0,
+            timestamp: aiCorners.timestamp,
+            status: aiCorners.prediction_status
           };
         }
       } catch (e) {
@@ -502,14 +503,14 @@
       const frameType = meta.frame_type || 'white';
       
       // Check AI generation status (corners and form separately)
-      const cornersStatus = meta.ai_corners_status || null;
-      const formStatus = meta.ai_form_status || null;
+      const aiCorners = meta.ai_corners || {};
+      const aiFillForm = meta.ai_fill_form || {};
+      const cornersStatus = aiCorners.status || null;
+      const formStatus = aiFillForm.status || null;
       // Badge on _final image: 
-      // - If _final exists: only show if form is pending (corners is done, so image exists)
-      // - If _final doesn't exist: show if corners is pending (corners creates the _final)
-      const hasPendingAIForFinalImage = finalVariant 
-        ? (formStatus && ['wanted', 'in_progress'].includes(formStatus))
-        : (cornersStatus && ['wanted', 'in_progress'].includes(cornersStatus));
+      // - Always check cornersStatus (corners creates the _final image)
+      // - Form status should NOT affect the _final image display
+      const hasPendingAIForFinalImage = cornersStatus && ['wanted', 'in_progress'].includes(cornersStatus);
       // General pending AI check (for other UI elements)
       const hasPendingAI = (cornersStatus && ['wanted', 'in_progress'].includes(cornersStatus)) || 
                            (formStatus && ['wanted', 'in_progress'].includes(formStatus));
@@ -688,8 +689,8 @@
                       <option value="in_progress" ${cornersStatus === 'in_progress' ? 'selected' : ''}>in_progress</option>
                       <option value="completed" ${cornersStatus === 'completed' ? 'selected' : ''}>completed</option>
                     </select>
-                    ${meta.ai_corners_started_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Gestartet: ${new Date(meta.ai_corners_started_at).toLocaleString('de-DE')}</small>` : ''}
-                    ${meta.ai_corners_completed_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Abgeschlossen: ${new Date(meta.ai_corners_completed_at).toLocaleString('de-DE')}</small>` : ''}
+                    ${aiCorners.started_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Gestartet: ${new Date(aiCorners.started_at).toLocaleString('de-DE')}</small>` : ''}
+                    ${aiCorners.completed_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Abgeschlossen: ${new Date(aiCorners.completed_at).toLocaleString('de-DE')}</small>` : ''}
                   </div>
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;">KI Form Status:</label>
@@ -700,8 +701,8 @@
                       <option value="in_progress" ${formStatus === 'in_progress' ? 'selected' : ''}>in_progress</option>
                       <option value="completed" ${formStatus === 'completed' ? 'selected' : ''}>completed</option>
                     </select>
-                    ${meta.ai_form_started_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Gestartet: ${new Date(meta.ai_form_started_at).toLocaleString('de-DE')}</small>` : ''}
-                    ${meta.ai_form_completed_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Abgeschlossen: ${new Date(meta.ai_form_completed_at).toLocaleString('de-DE')}</small>` : ''}
+                    ${aiFillForm.started_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Gestartet: ${new Date(aiFillForm.started_at).toLocaleString('de-DE')}</small>` : ''}
+                    ${aiFillForm.completed_at ? `<small style="color: #999; font-size: 9px; display: block; margin-top: 2px;">Abgeschlossen: ${new Date(aiFillForm.completed_at).toLocaleString('de-DE')}</small>` : ''}
                   </div>
                 </div>
                 <button type="button" onclick="showFullJSON('${escapeHtml(originalVariant.name)}', '${g.base}')" 
@@ -743,13 +744,13 @@
                         Unten rechts: ${aiCornersData.corners[2].x.toFixed(2)}%, ${aiCornersData.corners[2].y.toFixed(2)}% = (${Math.round(aiCornersData.corners[2].x / 100 * meta.image_dimensions.width)}, ${Math.round(aiCornersData.corners[2].y / 100 * meta.image_dimensions.height)}) px<br>
                         Unten links: ${aiCornersData.corners[3].x.toFixed(2)}%, ${aiCornersData.corners[3].y.toFixed(2)}% = (${Math.round(aiCornersData.corners[3].x / 100 * meta.image_dimensions.width)}, ${Math.round(aiCornersData.corners[3].y / 100 * meta.image_dimensions.height)}) px
                       </div>
-                      ${meta.corner_detection && meta.corner_detection.corners_used && Array.isArray(meta.corner_detection.corners_used) && meta.corner_detection.corners_used.length === 4 ? `
+                      ${aiCorners && aiCorners.corners_used && Array.isArray(aiCorners.corners_used) && aiCorners.corners_used.length === 4 ? `
                       <div>
                         <strong style="color: #666;">Verwendet (nach Offset ${aiCornersData.offset_percent}%):</strong><br>
-                        Oben links: (${meta.corner_detection.corners_used[0][0]}, ${meta.corner_detection.corners_used[0][1]}) px = (${(meta.corner_detection.corners_used[0][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(meta.corner_detection.corners_used[0][1] / meta.image_dimensions.height * 100).toFixed(2)}%)<br>
-                        Oben rechts: (${meta.corner_detection.corners_used[1][0]}, ${meta.corner_detection.corners_used[1][1]}) px = (${(meta.corner_detection.corners_used[1][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(meta.corner_detection.corners_used[1][1] / meta.image_dimensions.height * 100).toFixed(2)}%)<br>
-                        Unten rechts: (${meta.corner_detection.corners_used[2][0]}, ${meta.corner_detection.corners_used[2][1]}) px = (${(meta.corner_detection.corners_used[2][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(meta.corner_detection.corners_used[2][1] / meta.image_dimensions.height * 100).toFixed(2)}%)<br>
-                        Unten links: (${meta.corner_detection.corners_used[3][0]}, ${meta.corner_detection.corners_used[3][1]}) px = (${(meta.corner_detection.corners_used[3][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(meta.corner_detection.corners_used[3][1] / meta.image_dimensions.height * 100).toFixed(2)}%)
+                        Oben links: (${aiCorners.corners_used[0][0]}, ${aiCorners.corners_used[0][1]}) px = (${(aiCorners.corners_used[0][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(aiCorners.corners_used[0][1] / meta.image_dimensions.height * 100).toFixed(2)}%)<br>
+                        Oben rechts: (${aiCorners.corners_used[1][0]}, ${aiCorners.corners_used[1][1]}) px = (${(aiCorners.corners_used[1][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(aiCorners.corners_used[1][1] / meta.image_dimensions.height * 100).toFixed(2)}%)<br>
+                        Unten rechts: (${aiCorners.corners_used[2][0]}, ${aiCorners.corners_used[2][1]}) px = (${(aiCorners.corners_used[2][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(aiCorners.corners_used[2][1] / meta.image_dimensions.height * 100).toFixed(2)}%)<br>
+                        Unten links: (${aiCorners.corners_used[3][0]}, ${aiCorners.corners_used[3][1]}) px = (${(aiCorners.corners_used[3][0] / meta.image_dimensions.width * 100).toFixed(2)}%, ${(aiCorners.corners_used[3][1] / meta.image_dimensions.height * 100).toFixed(2)}%)
                       </div>
                       ` : ''}
                     ` : `
